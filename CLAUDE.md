@@ -9,6 +9,15 @@
 
 - Do **not** include the `Co-Authored-By` trailer (or any similar co-author attribution) in commit messages.
 
+## Branch Naming
+
+- Development for a feature or fix happens on a branch named **`<slug>-dev`**,
+  where `<slug>` is the kebab-case identifier for the work (e.g. the bug slug
+  used by the `os-bugfix` workflow, or a short feature name). Examples:
+  `sensor-crash-on-boot-dev`, `bugfix-dev`.
+- `master` is the integration branch. Do not commit in-progress feature work
+  directly to `master`; branch first into `<slug>-dev`.
+
 ## Automated Checks (Rust)
 
 Formatting and linting are automated checks, not review preferences.
