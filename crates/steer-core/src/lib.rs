@@ -41,7 +41,10 @@ pub use context::{Context, Frame, Status, StepState};
 pub use ir::{lower, Instr};
 pub use simulate::{simulate, SimStep};
 pub use storage::{load_context, load_ir, save_context, start_instance, InstanceError};
-pub use template::{render_call, Template, TemplateError};
+pub use template::{
+    render_call, render_check_report, render_retry_context, render_start_output,
+    render_status_output, Template, TemplateError,
+};
 pub use validate::{validate, Diagnostic, Severity};
 pub use value::{eval, eval_literal, parse_value, EvalError, Value};
 pub use vm::{check, report_error, set_value, step, CheckOutcome, StepOutcome};

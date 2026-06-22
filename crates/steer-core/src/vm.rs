@@ -77,12 +77,10 @@ pub fn step(ir: &[Instr], ctx: &mut Context, instance: &str) -> StepOutcome {
             Instr::AgentOp { call, into } => {
                 let mut text =
                     render_call(call, into.as_deref(), Some(&ctx.vars), &ctx.meta, instance);
-                if let Some(reason) = ctx
-                    .steps
-                    .get(&ctx.pc)
-                    .and_then(|state| state.failure_reason.as_deref())
-                {
-                    text = append_retry_context(text, reason);
+                if let Some(step_state) = ctx.steps.get(&ctx.pc) {
+                    if let Some(reason) = step_state.failure_reason.as_deref() {
+                        text = append_retry_context(text, reason, step_state.retry_count);
+                    }
                 }
                 return StepOutcome::Instruction(text);
             }
@@ -194,6 +192,13 @@ fn apply_meta(ctx: &mut Context, key: &str, value: Value) {
         } else {
             Some(rendered)
         };
+    } else if key == "context" {
+        let rendered = value.render();
+        ctx.meta.context = if rendered.is_empty() {
+            None
+        } else {
+            Some(rendered)
+        };
     }
 }
 
@@ -245,8 +250,9 @@ pub fn check(ir: &[Instr], ctx: &mut Context, instance: &str) -> CheckOutcome {
                         .to_string();
                     let st = ctx.steps.entry(pc).or_default();
                     // Keep `checked` as-is for audit; store failure reason
-                    // for retry context.
+                    // for retry context. Increment retry count.
                     st.failure_reason = Some(reason);
+                    st.retry_count += 1;
                     CheckOutcome::Failed
                 }
                 None => {
@@ -290,15 +296,16 @@ fn check_instruction(
     let tmpl = crate::template::resolve_template_with_meta(&call.callee, meta);
     let instruction = crate::template::render_check(&tmpl, call, into, Some(vars), instance)?;
     Ok(format!(
-        "{instruction}\n\nReport the verification result:\n- Passed: `steer instance set {instance} checked {{\"passed\":true}}`\n- Failed: `steer instance set {instance} checked {{\"passed\":false,\"reason\":\"<why it failed>\"}}`"
+        "{instruction}\n\n{}",
+        crate::template::render_check_report(instance)
     ))
 }
 
-fn append_retry_context(mut instruction: String, reason: &str) -> String {
-    instruction.push_str("\n\nPrevious verification failed:\n");
-    instruction.push_str(reason);
-    instruction.push_str("\n\nRetry the task and address the failure before checking again.");
-    instruction
+fn append_retry_context(instruction: String, reason: &str, retry_count: u32) -> String {
+    format!(
+        "{instruction}\n\n{}",
+        crate::template::render_retry_context(reason, retry_count)
+    )
 }
 
 /// Write a value into the context: a normal variable, or the special `checked`
@@ -424,7 +431,10 @@ mod tests {
         assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Failed);
         match step(&ir, &mut ctx, "<name>") {
             StepOutcome::Instruction(s) => {
-                assert!(s.contains("Previous verification failed"), "got: {s}");
+                assert!(
+                    s.contains("Previous verification failed (retry #1)"),
+                    "got: {s}"
+                );
                 assert!(s.contains("tests failed"), "got: {s}");
             }
             o => panic!("unexpected {o:?}"),

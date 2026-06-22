@@ -1,4 +1,10 @@
+# Rust
 /target
-/.steer/instances/
+
+# Code Agent
 /.claude
 /.codex
+
+/.steer/instances/
+!/.claude/skills/steer
+!/.claude/skills/steer-creator

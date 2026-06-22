@@ -266,3 +266,64 @@ fn explicit_cwd_file_takes_precedence_over_steer_workflows() {
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn instance_start_appends_context_directive() {
+    let tmp = std::env::temp_dir().join(format!("steer-ctx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("make tmp dir");
+    let wf = tmp.join("ctx.steer");
+    std::fs::write(
+        &wf,
+        "@context = \"This workflow automates root-cause analysis.\"\ntask(\"do work\")\n",
+    )
+    .unwrap();
+
+    let out = steer()
+        .args(["instance", "start", "ctx.steer", "it"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("started"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("This workflow automates root-cause analysis."),
+        "stdout was: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn instance_start_without_context_omits_description() {
+    let tmp = std::env::temp_dir().join(format!("steer-noctx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("make tmp dir");
+    let wf = tmp.join("noctx.steer");
+    std::fs::write(&wf, "task(\"do work\")\n").unwrap();
+
+    let out = steer()
+        .args(["instance", "start", "noctx.steer", "it"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Only the "started" line, no extra paragraph
+    assert!(stdout.contains("started"), "stdout was: {stdout}");
+    assert!(
+        !stdout.contains("do work"),
+        "instruction must not leak into start output: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

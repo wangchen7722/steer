@@ -163,12 +163,19 @@ fn run_instance_start(workflow: &Path, name: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = steer_core::start_instance(&dir, &src) {
-        eprintln!("error: {e}");
-        return ExitCode::FAILURE;
+    match steer_core::start_instance(&dir, &src) {
+        Ok(context_desc) => {
+            println!(
+                "{}",
+                steer_core::render_start_output(name, context_desc.as_deref())
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
     }
-    println!("instance {name}: started");
-    ExitCode::SUCCESS
 }
 
 /// Load an instance's IR and context, apply `f`, persist the context, and print
@@ -272,11 +279,14 @@ fn run_instance_status(name: &str) -> ExitCode {
         }
     };
     let status = match ctx.status {
-        steer_core::Status::Running => format!("running (pc={})", ctx.pc),
+        steer_core::Status::Running => "running".to_string(),
         steer_core::Status::Complete => "complete".to_string(),
         steer_core::Status::Halted(r) => format!("halted: {r}"),
     };
-    println!("instance {name}: {status}");
+    println!(
+        "{}",
+        steer_core::render_status_output(name, &status, ctx.meta.context.as_deref())
+    );
     ExitCode::SUCCESS
 }
 

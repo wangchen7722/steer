@@ -1,4 +1,6 @@
 // Demonstrates runtime template switching with @template.
+@context = "aaaa"
+
 change = ask("Which change should be planned?", return="change slug")
 
 @template = "planning"

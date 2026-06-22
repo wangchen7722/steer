@@ -11,8 +11,9 @@ use std::{fs, io};
 
 use thiserror::Error;
 
-use crate::context::Context;
+use crate::context::{Context, WorkflowMeta};
 use crate::ir::{lower, Instr};
+use crate::value::eval_literal;
 
 const WORKFLOW_FILE: &str = "workflow.steer";
 const CONTEXT_FILE: &str = "context.json";
@@ -31,6 +32,10 @@ pub enum InstanceError {
 /// Create (or reset) an instance: clear `dir`, write the workflow source, and
 /// initialise a fresh context.
 ///
+/// Returns `Ok(Some(context))` when the workflow contains an `@context = "..."`
+/// directive, giving the caller a summary of what the workflow does.
+/// Returns `Ok(None)` when no `@context` directive is present.
+///
 /// # Errors
 /// Returns [`InstanceError`] on filesystem failure; the fresh context is also
 /// serialised via [`save_context`].
@@ -38,7 +43,9 @@ pub enum InstanceError {
 /// Atomic across crashes: the new instance is staged in a sibling temp dir and
 /// swapped in with a single `rename`, so a crash mid-write never leaves a
 /// half-written instance — the previous instance (or none) remains intact.
-pub fn start_instance(dir: &Path, workflow_src: &str) -> Result<(), InstanceError> {
+pub fn start_instance(dir: &Path, workflow_src: &str) -> Result<Option<String>, InstanceError> {
+    let module = steer_syntax::parse(workflow_src)?;
+    let meta = extract_meta(&module);
     // Stage into a sibling temp directory next to the target.
     let staging = dir.with_extension("steer-new");
     if staging.exists() {
@@ -53,7 +60,34 @@ pub fn start_instance(dir: &Path, workflow_src: &str) -> Result<(), InstanceErro
         fs::remove_dir_all(dir)?;
     }
     fs::rename(&staging, dir)?;
-    Ok(())
+    Ok(meta.context)
+}
+
+/// Extract `WorkflowMeta` from a parsed module by evaluating top-level `@`
+/// directives. Only `@template` and `@context` are recognised.
+fn extract_meta(module: &steer_syntax::Module) -> WorkflowMeta {
+    let mut meta = WorkflowMeta::default();
+    for s in &module.body {
+        if let steer_syntax::ast::Stmt::Meta { key, value } = &s.value {
+            let v = eval_literal(value);
+            if key == "template" {
+                let rendered = v.render();
+                meta.template_dir = if rendered.is_empty() {
+                    None
+                } else {
+                    Some(rendered)
+                };
+            } else if key == "context" {
+                let rendered = v.render();
+                meta.context = if rendered.is_empty() {
+                    None
+                } else {
+                    Some(rendered)
+                };
+            }
+        }
+    }
+    meta
 }
 
 /// Load and lower the instance's workflow into its instruction stream.
@@ -171,6 +205,23 @@ mod tests {
         let mut ctx = load_context(&dir).unwrap();
         check(&ir, &mut ctx, "<name>");
         assert_eq!(step(&ir, &mut ctx, "<name>"), StepOutcome::Complete);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_returns_context_from_directive() {
+        let dir = tmp("ctx");
+        let src = "@context = \"bug-fix workflow\"\ntask(\"do\")\n";
+        let result = start_instance(&dir, src).unwrap();
+        assert_eq!(result, Some("bug-fix workflow".to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_returns_none_without_context_directive() {
+        let dir = tmp("noctx");
+        let result = start_instance(&dir, WORKFLOW).unwrap();
+        assert_eq!(result, None);
         let _ = fs::remove_dir_all(&dir);
     }
 }

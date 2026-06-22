@@ -123,6 +123,13 @@ fn apply_static_meta(meta: &mut WorkflowMeta, key: &str, value: &Spanned<Expr>) 
         } else {
             Some(rendered)
         };
+    } else if key == "context" {
+        let rendered = value.render();
+        meta.context = if rendered.is_empty() {
+            None
+        } else {
+            Some(rendered)
+        };
     }
 }
 

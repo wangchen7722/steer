@@ -480,7 +480,7 @@ fn workflow_node_templates(dir_name: &str) -> HashMap<String, NodeTemplate> {
 /// Resolve the [`NodeTemplate`] for a node, in priority order:
 /// 1. a file in `.steer/templates/default/<callee>.j2.md`;
 /// 2. the hardcoded fallback ([`fallback_template`]);
-/// 3. a generic task-like template (minimal formatter + [`TASK_BODY`]).
+/// 3. a generic task-like template (minimal formatter + [`TASK_JINJA2`]).
 pub fn resolve_template(callee: &str) -> NodeTemplate {
     resolve_template_with_meta(callee, &WorkflowMeta::default())
 }
@@ -489,7 +489,7 @@ pub fn resolve_template(callee: &str) -> NodeTemplate {
 /// 1. a file in `.steer/templates/<meta.template_dir>/<callee>.j2.md`;
 /// 2. a file in `.steer/templates/default/<callee>.j2.md`;
 /// 3. the hardcoded fallback ([`fallback_template`]);
-/// 4. a generic task-like template (minimal formatter + [`TASK_BODY`]).
+/// 4. a generic task-like template (minimal formatter + [`TASK_JINJA2`]).
 pub fn resolve_template_with_meta(callee: &str, meta: &WorkflowMeta) -> NodeTemplate {
     if let Some(dir) = &meta.template_dir {
         if dir != "default" {
@@ -508,7 +508,7 @@ pub fn resolve_template_with_meta(callee: &str, meta: &WorkflowMeta) -> NodeTemp
             required: true,
             default: None,
         }],
-        body: TASK_BODY.to_string(),
+        body: TASK_JINJA2.to_string(),
         on_check: None,
     })
 }
@@ -523,7 +523,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("check", ParamKind::String, false, None),
                 spec("produce", ParamKind::List, false, None),
             ],
-            TASK_BODY,
+            TASK_JINJA2,
         ),
         "ask" => (
             vec![
@@ -532,7 +532,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("check", ParamKind::String, false, None),
                 spec("produce", ParamKind::List, false, None),
             ],
-            ASK_BODY,
+            ASK_JINJA2,
         ),
         "command" => (
             vec![
@@ -546,7 +546,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("produce", ParamKind::List, false, None),
                 spec("check", ParamKind::String, false, None),
             ],
-            COMMAND_BODY,
+            COMMAND_JINJA2,
         ),
         "collect" => (
             vec![
@@ -560,7 +560,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("check", ParamKind::String, false, None),
                 spec("produce", ParamKind::List, false, None),
             ],
-            COLLECT_BODY,
+            COLLECT_JINJA2,
         ),
         "print" => (
             vec![
@@ -569,7 +569,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("check", ParamKind::String, false, None),
                 spec("produce", ParamKind::List, false, None),
             ],
-            PRINT_BODY,
+            PRINT_JINJA2,
         ),
         "judge" => (
             vec![
@@ -578,7 +578,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
                 spec("check", ParamKind::String, false, None),
                 spec("produce", ParamKind::List, false, None),
             ],
-            JUDGE_BODY,
+            JUDGE_JINJA2,
         ),
         _ => return None,
     };
@@ -608,49 +608,150 @@ fn spec(name: &str, kind: ParamKind, required: bool, default: Option<Value>) -> 
 
 /// `task` — the universal agent primitive. Do work, optionally report a value,
 /// optionally verify, optionally produce files.
-const TASK_BODY: &str = "\
-{{ instruction }}
-{% if return %}- Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
-{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
-{% endif %}";
+const TASK_JINJA2: &str = "\
+Follow the instruction below{% if return %} and report back{% endif %}.
+<instruction>{{ instruction }}</instruction>
+{% if return %}<report>Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}. If you cannot complete the work, use `steer instance error {{ steer_instance }} \"<reason>\"` instead of guessing.</report>
+{% endif %}{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
+{% endif %}<rule>Execute only this instruction. Do NOT skip ahead or do unplanned work.</rule>";
 
 /// `ask` — obtain a value from the human user (e.g. via AskUserQuestion).
-const ASK_BODY: &str = "\
-**Ask the user:** {{ instruction }}
-{% if return %}- Report their answer via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
-{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+const ASK_JINJA2: &str = "\
+Ask the user the following question and report their answer back.
+<question>{{ instruction }}</question>
+<method>
+Use `AskUserQuestion` (or the host agent's equivalent) instead of just printing the question.
+
+Choose the format:
+- If the answer comes from a small, known set (yes/no, a/b/c, a list of IDs), provide 2-4 multiple-choice options. The user always has an \"Other\" choice for free input.
+- If the answer is genuinely open-ended (free text, a path, a description), ask open-ended.
+
+Even if you can infer a likely answer from context (e.g. the user already described the problem before starting this workflow), still call AskUserQuestion instead of filling in the answer yourself. Include your inferred answer as one of the multiple-choice options so the user can confirm it quickly or choose differently.
+</method>
+<rule>Never substitute your own answer. The value MUST come from the human user.</rule>
+<report>Report the user's answer exactly as given via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}.</report>
+{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
 {% endif %}";
 
 /// `command` — run a shell command and capture its output.
-const COMMAND_BODY: &str = "\
-**Shell command:** {{ instruction }}
-{% if return %}- Report the output via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
-{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
-{% endif %}";
+const COMMAND_JINJA2: &str = "\
+Run the following shell command and capture its output (stdout, stderr, exit code).
+<command>{{ instruction }}</command>
+<report>Report the output via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}. If the command fails, report the failure honestly instead of fabricating success.</report>
+{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
+{% endif %}<rule>Run the command exactly as given. Do not modify flags or add extra steps.</rule>";
 
 /// `collect` — a reasoning value op: the agent investigates/analyzes on its own
 /// and reports the value that work produces.
-const COLLECT_BODY: &str = "\
-{{ instruction }}
-- Do the actual work yourself: read files, trace behavior, reason it through. Ground the answer in what you examined. Do not guess or hand-wave.
-{% if return %}- Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
-{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+const COLLECT_JINJA2: &str = "\
+Investigate the following on your own and report the finding.
+<instruction>{{ instruction }}</instruction>
+<rule>Do the actual work yourself: read files, trace behavior, reason it through. Ground your answer in what you examined. Do not guess or hand-wave.</rule>
+<report>Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}. If you cannot reach a confident answer, use `steer instance error {{ steer_instance }} \"<reason>\"` instead of fabricating.</report>
+{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
 {% endif %}";
 
 /// `print` — output for side effects; no value, no verification.
-const PRINT_BODY: &str = "\
-{{ instruction }}
-{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+const PRINT_JINJA2: &str = "\
+Output the following content to the user.
+<output>{{ instruction }}</output>
+{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
 {% endif %}";
 
 /// `judge` — a boolean judgment. Unlike value nodes it has no `return=`
 /// argument; a boolean is its intrinsic result.
-const JUDGE_BODY: &str = "\
-{{ instruction }}
-
-Answer with only `true` or `false`. Set it via `steer instance set {{ steer_instance }} {{ steer_target }} true` (or `false`).
-{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+const JUDGE_JINJA2: &str = "\
+Evaluate the following and answer true or false.
+<question>{{ instruction }}</question>
+<answer>Set your answer via `steer instance set {{ steer_instance }} {{ steer_target }} true` (or `false`). Answer only `true` or `false`, no explanation or hedging. If you genuinely cannot determine, use `steer instance error {{ steer_instance }} \"cannot determine\"`.</answer>
+{% if produce %}<produce>Write or update the following files as part of this work:{% for f in produce %}
+- {{ f }}{% endfor %}
+</produce>
 {% endif %}";
+
+// ---- VM-internal message templates ----
+
+/// Retry context template: appended to a re-issued instruction after a check
+/// failure so the agent sees what went wrong and which retry attempt this is.
+///
+/// Placeholders: `{reason}` (the failure reason), `{retry_count}` (1-based).
+const RETRY_CONTEXT_TEMPLATE: &str =
+    "Previous verification failed (retry #{retry_count}):\n{reason}\n\nRetry the task and address the failure before checking again.";
+
+/// Check report template: auto-appended to every check instruction so the
+/// agent always knows how to report the verification result.
+///
+/// Placeholders: `{instance}` (the run's instance name).
+const CHECK_REPORT_TEMPLATE: &str =
+    "Report the verification result:\n- Passed: `steer instance set {instance} checked '{\"passed\":true}'`\n- Failed: `steer instance set {instance} checked '{\"passed\":false,\"reason\":\"<why it failed>\"}'`";
+
+/// Instance start output template when the workflow has an `@context` directive.
+///
+/// Placeholders: `{name}` (instance name), `{context}` (the context description).
+const START_WITH_CONTEXT_TEMPLATE: &str = "instance {name}: started\n\n{context}";
+
+/// Instance start output template when no `@context` directive is present.
+///
+/// Placeholders: `{name}` (instance name).
+const START_NO_CONTEXT_TEMPLATE: &str = "instance {name}: started";
+
+/// Instance status output template when the workflow has an `@context` directive.
+///
+/// Placeholders: `{name}` (instance name), `{status}` (running / complete /
+/// halted: reason), `{context}` (the context description).
+const STATUS_WITH_CONTEXT_TEMPLATE: &str = "instance {name}: {status}\n\n{context}";
+
+/// Instance status output template when no `@context` directive is present.
+///
+/// Placeholders: `{name}` (instance name), `{status}` (the status string).
+const STATUS_NO_CONTEXT_TEMPLATE: &str = "instance {name}: {status}";
+
+/// Render the retry context message from [`RETRY_CONTEXT_TEMPLATE`].
+pub fn render_retry_context(reason: &str, retry_count: u32) -> String {
+    RETRY_CONTEXT_TEMPLATE
+        .replace("{reason}", reason)
+        .replace("{retry_count}", &retry_count.to_string())
+}
+
+/// Render the check report section from [`CHECK_REPORT_TEMPLATE`].
+pub fn render_check_report(instance: &str) -> String {
+    CHECK_REPORT_TEMPLATE.replace("{instance}", instance)
+}
+
+/// Render the instance start output, appending the workflow context description
+/// when present.
+pub fn render_start_output(name: &str, context: Option<&str>) -> String {
+    match context {
+        Some(desc) => START_WITH_CONTEXT_TEMPLATE
+            .replace("{name}", name)
+            .replace("{context}", desc),
+        None => START_NO_CONTEXT_TEMPLATE.replace("{name}", name),
+    }
+}
+
+/// Render the instance status output, appending the workflow context description
+/// when present.
+pub fn render_status_output(name: &str, status: &str, context: Option<&str>) -> String {
+    match context {
+        Some(desc) => STATUS_WITH_CONTEXT_TEMPLATE
+            .replace("{name}", name)
+            .replace("{status}", status)
+            .replace("{context}", desc),
+        None => STATUS_NO_CONTEXT_TEMPLATE
+            .replace("{name}", name)
+            .replace("{status}", status),
+    }
+}
 
 /// Render the check instruction for a call, using the template's `on_check`
 /// field if defined, or falling back to the plain evaluated `check=` value.
@@ -997,15 +1098,71 @@ mod tests {
         // A typo in a built-in const template would panic at the first
         // render_call; this test catches it at `cargo test` time instead.
         for body in [
-            TASK_BODY,
-            ASK_BODY,
-            COMMAND_BODY,
-            COLLECT_BODY,
-            PRINT_BODY,
-            JUDGE_BODY,
+            TASK_JINJA2,
+            ASK_JINJA2,
+            COMMAND_JINJA2,
+            COLLECT_JINJA2,
+            PRINT_JINJA2,
+            JUDGE_JINJA2,
         ] {
             Template::parse(body).expect("built-in template must parse");
         }
+    }
+
+    #[test]
+    fn render_retry_context_format() {
+        let out = super::render_retry_context("tests failed", 1);
+        assert!(out.contains("retry #1"), "got: {out}");
+        assert!(out.contains("tests failed"), "got: {out}");
+        assert!(
+            out.contains("Retry the task and address the failure"),
+            "got: {out}"
+        );
+        // Higher retry count
+        let out10 = super::render_retry_context("still broken", 10);
+        assert!(out10.contains("retry #10"), "got: {out10}");
+    }
+
+    #[test]
+    fn render_check_report_format() {
+        let out = super::render_check_report("myrun");
+        assert!(
+            out.contains("steer instance set myrun checked"),
+            "got: {out}"
+        );
+        assert!(out.contains("\"passed\":true"), "got: {out}");
+        assert!(out.contains("\"passed\":false"), "got: {out}");
+        assert!(out.contains("\"reason\""), "got: {out}");
+    }
+
+    #[test]
+    fn render_start_output_with_context() {
+        let out = super::render_start_output("myrun", Some("bug-fix workflow"));
+        assert!(out.contains("instance myrun: started"), "got: {out}");
+        assert!(out.contains("bug-fix workflow"), "got: {out}");
+    }
+
+    #[test]
+    fn render_start_output_without_context() {
+        let out = super::render_start_output("myrun", None);
+        assert_eq!(out, "instance myrun: started");
+    }
+
+    #[test]
+    fn render_status_output_running_with_context() {
+        let out = super::render_status_output("myrun", "running", Some("bug-fix workflow"));
+        assert!(out.contains("instance myrun: running"), "got: {out}");
+        assert!(out.contains("bug-fix workflow"), "got: {out}");
+        assert!(!out.contains("pc="), "pc must not appear: {out}");
+    }
+
+    #[test]
+    fn render_status_output_halted_without_context() {
+        let out = super::render_status_output("myrun", "halted: something broke", None);
+        assert!(
+            out.contains("instance myrun: halted: something broke"),
+            "got: {out}"
+        );
     }
 
     #[test]
@@ -1081,6 +1238,7 @@ mod tests {
         };
         let meta = WorkflowMeta {
             template_dir: Some(dir_name),
+            context: None,
         };
         let out = render_call(c, None, None, &meta, "<name>");
         assert_eq!(out, "CUSTOM body");

@@ -1,46 +1,31 @@
 ---
 name: steer
-description: Drive a steer (.steer) workflow to completion. Use when the user wants to run a steer workflow — step it one instruction at a time, execute each instruction, report the result back via `steer instance set`, and advance with `steer instance check` until the run is complete.
-license: MIT
+description: Drive a steer workflow to completion. Use when the user wants to run a steer workflow, validate or simulate a workflow, or mentions `steer instance` / `steer workflow` commands.
 ---
 
-# steer — driving a workflow
+Run a steer workflow to completion.
 
-`steer` is an external control unit (a "PC"): it holds a workflow's program
-counter and hands you **one instruction at a time**. You execute each
-instruction, report the result back, and steer advances. This skill drives that
-loop.
+steer is a workflow interpreter: it parses a `.steer` workflow into individual instructions and hands them to you one at a time. You execute each instruction, report the result back, and steer advances to the next step.
 
-steer never runs shell or touches files itself — **you** do the work each
-instruction describes, and you report results back through `steer instance set` /
-`steer instance check`.
+## Input
 
-## Inputs
-
-The user gives (or you derive):
-- a workflow file path (`.steer`), e.g. `.steer/workflows/smoke-bugfix.steer`
-- an **instance name**, e.g. the bug id (`login-500`) or a short label
+The user provides (or you derive):
+- a workflow file path (`.steer`)
+- an **instance name** (a short label for this run)
 
 If either is unclear, ask the user with the AskUserQuestion tool.
 
-## Authoring / checking a workflow first (optional)
+## Steps
 
-Before running, you may check it is well-formed:
-
-```bash
-steer workflow validate <workflow>      # syntax + semantic checks
-steer workflow simulate <workflow>      # print every instruction it would emit
-```
-
-## The run loop
-
-1. Start the instance once:
+1. **Start the instance**
 
    ```bash
    steer instance start <workflow> <name>
    ```
 
-2. Repeat until a step prints `(complete)` (or `(not running)`):
+   Output: `instance <name>: started`, followed by the workflow context description if `@context` was set in the workflow.
+
+2. **Loop** until `step` returns `(complete)` or `(not running)`:
 
    a. **Get the current instruction:**
 
@@ -48,81 +33,49 @@ steer workflow simulate <workflow>      # print every instruction it would emit
       steer instance step <name>
       ```
 
-      It prints the rendered instruction (or `(complete)`).
+   b. **Execute the instruction.** Read it and follow exactly what it says.
 
-   b. **Do exactly what that instruction says.** Execute only the current
-      instruction — do not skip ahead or do later steps. For value-producing
-      ops the instruction tells you which variable to set and in what format.
+   c. **Report the result back** (when the instruction tells you to set a value):
 
-   c. **Report the result back** (this is how the agent returns data to steer):
+      ```bash
+      steer instance set <name> <var> <value>
+      ```
 
-      - For a **value op** (the instruction has a `<report>` tag):
+      `<value>` is a typed JSON literal: `[1,2,3]` (list), `42` (int), `true`/`false` (bool), `"text"` (string), or a bare word treated as a string.
 
-        ```bash
-        steer instance set <name> <var> <value>
-        ```
-
-        `<value>` is a typed JSON literal: `[1,2,3]` (list), `42` (int),
-        `true`/`false` (bool), `"text"` (string), or a bare word treated as a
-        string.
-
-      - For a **task with a `check`**: perform the check it describes, then:
-
-        ```bash
-        steer instance set <name> checked true   # or false
-        ```
-
-   d. **Advance:**
+   d. **Check and advance:**
 
       ```bash
       steer instance check <name>
       ```
 
       Possible results:
-      - `advanced` — the op passed; loop back to `step`.
-      - `pending` — you haven't reported the value/flag yet; do step (c) then
-        `check` again.
-      - `failed` — the check failed; re-read the instruction, fix, and retry
-        (set the value / `checked` again, then `check`).
+      - `advanced` — op passed. Call `step` to get the next instruction.
+      - `pending` — value not reported yet. Do step (c) then `check` again.
+      - an **instruction** — steer is asking you to verify the work. Perform the verification, report via `set checked`, then `check` again.
+      - `failed` — check failed. Call `step` again to re-read the same instruction with the failure context, fix, and retry.
 
-3. If something is unrecoverable, halt the run:
+3. **If unrecoverable**, halt:
 
    ```bash
    steer instance error <name> "<reason>"
    ```
 
-4. At any time you can inspect state:
+4. **Inspect state** at any time:
 
    ```bash
-   steer instance status <name>     # running (pc=N) / complete / halted: <reason>
+   steer instance status <name>     # running / complete / halted: <reason>
    ```
 
-## How to read an instruction
+   The output includes the workflow context (if `@context` was set) and the current run status.
 
-Each instruction is an XML block whose root tag names the node type (`task`,
-`ask`, `command`, `collect`, `judge`, `print`). The tags tell you what to do
-and the exact command to report back:
+## Guardrails
 
-- `<instruction>` — the one unit of work to do (natural language).
-- `<report>` — when present, the exact command to report a value, already
-  filled with the instance name and target, e.g.
-  `steer instance set <name> <var> <value>`, plus a format hint. Do the work,
-  then run that command with a value matching the format.
-- `<produce>` — files the op should create.
-- `<answer>` (judge) — answer `true`/`false` via the given command.
-
-`<name>` is this run's instance name; `<value>` is what you fill in.
-
-## Rules
-
-- Execute **only** the current instruction. Never look ahead or do later steps.
-- Always `set` the value (or `checked`) before `check`, or `check` returns
-  `pending`.
-- On `failed`, fix and retry the **same** instruction — do not skip it.
-- `command("...")` means run that shell command and set its result.
-  `ask("...")` means ask the user (AskUserQuestion) and set their answer.
+- Always `set` the value (or `checked`) **before** `check`, or `check` returns `pending`.
+- On `failed`, retry the **same** instruction. Do **not** skip it.
+- If a check fails repeatedly (retry count ≥ 10), use `steer instance error` to halt instead of looping forever.
+- If you genuinely cannot reach a confident answer, use `steer instance error` instead of fabricating a result.
 
 ## Output
 
-When the run is `complete`, summarise what the workflow accomplished and where
-any artifacts were written. If it was `halted`, report the reason.
+When the run is `complete`, summarise what the workflow accomplished and where any artifacts were written. If it was `halted`, report the reason.

@@ -39,6 +39,10 @@ pub struct StepState {
     pub checked: Option<CheckedReport>,
     /// The most recent failed verification reason for retry context.
     pub failure_reason: Option<String>,
+    /// How many times this op's check has failed (used for retry context and
+    /// auto-halt after excessive retries).
+    #[serde(default)]
+    pub retry_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +78,9 @@ impl CheckedReport {
 pub struct WorkflowMeta {
     /// Active template directory under `.steer/templates/`. `None` means `default`.
     pub template_dir: Option<String>,
+    /// Workflow-level context description set by `@context = "..."`.
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 /// The full execution context.
@@ -137,6 +144,7 @@ mod tests {
         c.pc = 3;
         c.vars.insert("x".into(), Value::Int(5));
         c.meta.template_dir = Some("bugfix".into());
+        c.meta.context = Some("bug-fix workflow".into());
         c.steps.insert(
             2,
             StepState {
@@ -145,6 +153,7 @@ mod tests {
                     reason: None,
                 }),
                 failure_reason: Some("previous failure".into()),
+                retry_count: 3,
             },
         );
         let json = serde_json::to_string(&c).unwrap();
