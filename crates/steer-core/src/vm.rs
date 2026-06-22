@@ -296,14 +296,14 @@ fn check_instruction(
     let tmpl = crate::template::resolve_template_with_meta(&call.callee, meta);
     let instruction = crate::template::render_check(&tmpl, call, into, Some(vars), instance)?;
     Ok(format!(
-        "{instruction}\n\n{}",
+        "{instruction}\n\n<steer-system-reminder>\n{}\n</steer-system-reminder>",
         crate::template::render_check_report(instance)
     ))
 }
 
 fn append_retry_context(instruction: String, reason: &str, retry_count: u32) -> String {
     format!(
-        "{instruction}\n\n{}",
+        "{instruction}\n\n<steer-system-reminder>\n{}\n</steer-system-reminder>",
         crate::template::render_retry_context(reason, retry_count)
     )
 }
@@ -506,9 +506,27 @@ mod tests {
 
     #[test]
     fn full_example_bugfix_loop_run_with_mock_agent() {
-        let ir = ir(include_str!(
-            "../../../examples/workflows/bugfix-loop.steer"
-        ));
+        let src = r#"
+bug = ask("Which bug?", return="bug id")
+root_cause = collect("Reproduce {bug}", return="root cause", check="confirm summary")
+files = command("git diff --name-only", return="files")
+attempt = 0
+passed = false
+loop
+    attempt = attempt + 1
+    task("Fix {bug} attempt {attempt}", check="verify fix")
+    passed = judge("Did the fix work?")
+until passed or attempt >= 3
+if not passed
+    task("Write handoff", produce=["handoff.md"], check="confirm handoff")
+    return
+end
+for f in files
+    task("Review {f}", check="confirm {f} is clean")
+end
+print("done")
+"#;
+        let ir = ir(src);
         let mut ctx = Context::new();
         // Drive the whole workflow: for each instruction, mock the agent by
         // supplying a value for value-ops and auto-passing checks.

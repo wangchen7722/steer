@@ -1,10 +1,15 @@
 # Rust
 /target
 
-# Code Agent
-/.claude
-/.codex
-
-/.steer/instances/
+# ClaudeCode
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
 !/.claude/skills/steer
 !/.claude/skills/steer-creator
+
+# Codex
+/.codex/*
+
+# Steer
+/.steer/instances/*
