@@ -1,0 +1,123 @@
+// Workflow: os-bugfix
+// A generic OS-domain bugfix lifecycle for a Rust + GN/Ninja codebase at
+// manifest (multi-repo) scale (Android-like, e.g. vivo BlueOS). Real-device
+// flashing is human-in-the-loop.
+//
+// Phases:
+//   intake -> (resume|fresh) -> reproduce -> root-cause (multi-repo)
+//          -> capture build/flash/verify commands
+//          -> bounded fix loop { develop -> build -> flash -> verify -> log }
+//          -> finalize | handoff
+//
+// CROSS-ITERATION MEMORY lives in the per-bug dossier at bugfix/<slug>/:
+//   intake.md       bug metadata (slug, component/crate, severity, build, device)
+//   reproduce.md    repro steps, observed vs expected, captured logs
+//   rca.md          root cause + affected git project(s) + evidence
+//   findings.md     append-only investigation journal (the findings memory)
+//   iterations.md   append-only per-attempt log (what was tried + outcome)
+//   fix.md          current attempt's change record (files, projects, rationale)
+//   flash.md        cached target device + build + flash commands
+//   verify.md       cached verify command + per-attempt results
+//   handoff.md      written only when the attempt budget is exhausted
+//
+// Each phase READS prior dossier files and APPENDS to findings.md / iterations.md,
+// so a resumed run never redoes a finished phase and never repeats a failed fix.
+
+@template = "os-bugfix"
+@context = "OS bugfix lifecycle (Rust/GN+Ninja, multi-repo, real-device flash): intake, reproduce, root-cause, capture commands, bounded fix loop with build/flash/verify, finalize or handoff. Memory persists in bugfix/<slug>/."
+
+// Maximum fix attempts before handing off. Tunable.
+max_attempts = 3
+
+// 1. Identify the bug and its dossier slug.
+bug_slug = ask("What is the bug slug? This becomes the bugfix/<slug>/ dossier directory. Use kebab-case, e.g. sensor-crash-on-boot.", return="bug slug in kebab-case")
+
+// 2. Resume or fresh. An existing dossier means prior memory to build on.
+exists = command("test -d bugfix/{bug_slug} && echo yes || echo no", return="yes or no")
+
+if exists == "yes"
+    // Load prior memory: read every dossier file so this run continues where the
+    // last one stopped. Do not redo completed phases (the has_* checks below skip
+    // them) and do not repeat a failed fix (the fix loop reads iterations.md).
+    task("Resume context load for {bug_slug}. Read bugfix/{bug_slug}/intake.md, reproduce.md, rca.md, findings.md, iterations.md, fix.md, flash.md, verify.md (whichever exist). State: what is known, what was already attempted, and where work stopped. Do NOT redo completed phases.",
+         check="confirm you have read the existing dossier and can state the current bug status and the last attempted fix")
+else
+    intake("Create the bug intake record for {bug_slug}.",
+           produce=["bugfix/{bug_slug}/intake.md"],
+           check="confirm bugfix/{bug_slug}/intake.md records slug, title, component/crate, severity, OS/build version, target device, environment, reporter/date, and status")
+end
+
+// 3. Reproduce (skip if reproduce.md already exists from a prior run).
+has_repro = command("test -f bugfix/{bug_slug}/reproduce.md && echo yes || echo no", return="yes or no")
+if has_repro != "yes"
+    reproduce("Establish a reliable, repeatable reproduction of {bug_slug} and capture hard evidence (logs, Rust panic backtrace, crash records).",
+              produce=["bugfix/{bug_slug}/reproduce.md", "bugfix/{bug_slug}/findings.md"],
+              check="confirm bugfix/{bug_slug}/reproduce.md states concrete repro steps, observed vs expected behavior, environment, and captured log paths, and findings.md gained a dated reproduce entry")
+end
+
+// 4. Root-cause analysis. MUST identify the affected git project(s).
+has_rca = command("test -f bugfix/{bug_slug}/rca.md && echo yes || echo no", return="yes or no")
+if has_rca != "yes"
+    rca("Find the root cause of {bug_slug} and the affected git project(s) via the manifest/repo tooling or git remote. Trace from the captured evidence to the failing crate/module/function/line.",
+        produce=["bugfix/{bug_slug}/rca.md", "bugfix/{bug_slug}/findings.md"],
+        check="confirm bugfix/{bug_slug}/rca.md names the affected git project(s), the failing crate/module/function/file/line, the causal chain, observed-vs-expected divergence, and evidence, and findings.md gained a dated RCA entry")
+end
+
+// 5. Capture build/flash/verify commands + target device ONCE, cache to dossier.
+//    These are read back every iteration and every resumed run.
+has_commands = command("test -f bugfix/{bug_slug}/flash.md && echo yes || echo no", return="yes or no")
+if has_commands != "yes"
+    capture_commands("Gather target device, build, flash, and verify commands from the user and cache them for {bug_slug}.",
+                     produce=["bugfix/{bug_slug}/flash.md", "bugfix/{bug_slug}/verify.md"],
+                     check="confirm bugfix/{bug_slug}/flash.md holds target device + build command + flash command, and bugfix/{bug_slug}/verify.md holds the verify command, all user-sourced")
+end
+
+// 6. Bounded fix loop. Each iteration reads prior attempts (iterations.md,
+//    findings.md) so it does not repeat a failed fix.
+attempt = 0
+fixed = false
+loop
+    attempt = attempt + 1
+
+    develop_fix("Apply attempt {attempt} for {bug_slug}. Read bugfix/{bug_slug}/rca.md for the root cause and bugfix/{bug_slug}/iterations.md and findings.md for prior attempts; devise a fix that DIFFERS from prior failed attempts. Apply the smallest safe change in the affected git project(s). Preserve all other behavior.",
+                produce=["bugfix/{bug_slug}/fix.md"],
+                check="confirm the source change is applied and bugfix/{bug_slug}/fix.md records the changed files, the git project(s) touched, and the rationale tied to the root cause")
+
+    // Build using the cached command. Read it from flash.md at runtime.
+    task("Build attempt {attempt} for {bug_slug}. Read the build command from bugfix/{bug_slug}/flash.md and execute it for the affected git project(s). If it fails, fix the build error before reporting.",
+         check="confirm the build exited successfully and produced the image or artifact to flash")
+
+    // Flash to the real device, human-in-the-loop. The step will not flash until
+    // the human confirms the device is ready, and confirms it rebooted afterward.
+    // A not-ready answer fails the check and the step retries (re-asking).
+    flash("Flash attempt {attempt} for {bug_slug} to the real device. Read the flash command and device profile from bugfix/{bug_slug}/flash.md. Human-in-the-loop: confirm device readiness and post-flash reboot via AskUserQuestion before and after flashing.",
+          check="confirm the device was flashed using the command in bugfix/{bug_slug}/flash.md and rebooted to normal mode, with both human gates answered yes")
+
+    // Verify on device. Run the cached verify command if host-driven; otherwise
+    // ask the human to run the repro on the device and report with logs.
+    verify("Verify attempt {attempt} for {bug_slug}. Read the verify command from bugfix/{bug_slug}/verify.md and run it if host-driven; otherwise ask the human to run the reproduction on the device and report the result with logs. Append this attempt's result and evidence to verify.md.",
+           produce=["bugfix/{bug_slug}/verify.md"],
+           check="confirm bugfix/{bug_slug}/verify.md records attempt {attempt}'s result and supporting evidence")
+
+    repro_gone = judge("Based on the evidence in bugfix/{bug_slug}/verify.md for attempt {attempt}, does the bug NO LONGER reproduce, i.e. the fix worked?")
+
+    // Record this iteration (and any new finding) for cross-iteration memory.
+    iteration_log("Append attempt {attempt} for {bug_slug} to the iteration journal. Read fix.md and verify.md to summarize accurately. Record changed files and projects, build result, flash result, verify verdict, and that repro_gone={repro_gone}.",
+                  produce=["bugfix/{bug_slug}/iterations.md", "bugfix/{bug_slug}/findings.md"],
+                  check="confirm bugfix/{bug_slug}/iterations.md gained a dated attempt-{attempt} entry and findings.md gained any new finding from this attempt")
+
+    fixed = repro_gone
+until fixed or attempt >= max_attempts
+
+// 7. Outcome: finalize or hand off.
+if fixed
+    task("Finalize {bug_slug}. Review every changed file across the affected git project(s) recorded in bugfix/{bug_slug}/rca.md; confirm each change is justified by the root cause and nothing stray remains. Update intake.md status to FIXED and record the final commit or patch refs in fix.md.",
+         produce=["bugfix/{bug_slug}/intake.md", "bugfix/{bug_slug}/fix.md"],
+         check="confirm intake.md status is FIXED, fix.md records final commit or patch refs, and every change maps to an affected project in rca.md")
+    print("os-bugfix complete: {bug_slug} fixed after {attempt} attempt(s). Dossier in bugfix/{bug_slug}/.")
+else
+    handoff("Write the handoff for {bug_slug}: the bug is not fixed after {attempt} attempts. Read the full dossier first (rca.md, iterations.md, findings.md, fix.md, verify.md).",
+            produce=["bugfix/{bug_slug}/handoff.md"],
+            check="confirm bugfix/{bug_slug}/handoff.md states root cause, every attempted fix and why it failed, the last failing evidence, and the next diagnostic step")
+    print("os-bugfix halted: {bug_slug} not fixed after {attempt} attempts. See bugfix/{bug_slug}/handoff.md.")
+end
