@@ -387,10 +387,19 @@ mod tests {
 
     #[test]
     fn value_task_assigned_without_return_is_error() {
+        // task: return is optional, so only the generic "value node needs return" fires
         assert_one_diagnostic("x = task(\"do\")\n", "return=");
-        assert_one_diagnostic("y = ask(\"q\")\n", "return=");
-        assert_one_diagnostic("z = command(\"ls\")\n", "return=");
-        assert_one_diagnostic("w = collect(\"think\")\n", "return=");
+        // ask/command/collect: return is required, so both the generic and
+        // the specific "requires a `return` argument" fire
+        for node in ["ask", "command", "collect"] {
+            let src = format!("v = {node}(\"do\")\n");
+            let d = diags(&src);
+            assert!(!d.is_empty(), "expected diagnostics for {src}");
+            assert!(
+                d.iter().any(|diag| diag.message.contains("return")),
+                "expected a diagnostic mentioning `return` for {src}, got: {d:?}",
+            );
+        }
     }
 
     #[test]

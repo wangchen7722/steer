@@ -209,7 +209,10 @@ mod tests {
     fn assignment_call_simulates_set_prompt_with_target() {
         let steps = simulate_src("answer = ask(\"q\", return=\"str\")\n");
         assert_eq!(steps.len(), 1);
-        assert!(steps[0].instruction.contains("steer set answer"));
+        assert!(
+            steps[0].instruction.contains("steer instance set")
+                && steps[0].instruction.contains("answer")
+        );
     }
 
     #[test]

@@ -1,0 +1,10 @@
+// Demonstrates runtime template switching with @template.
+change = ask("Which change should be planned?", return="change slug")
+
+@template = "planning"
+task("Create a proposal outline for {change}", check="confirm the outline identifies goals and non-goals")
+task("Create a design checklist for {change}", check="confirm the checklist covers risks and validation")
+
+@template = "default"
+task("Implement the first checklist item for {change}", check="confirm the implementation is minimal")
+print("template switch workflow complete for {change}")

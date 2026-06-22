@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use steer_syntax::ast::{Call, CallArg};
 
-use crate::context::{CheckedReport, Context, Frame, Status};
+use crate::context::{CheckedReport, Context, Frame, Status, WorkflowMeta};
 use crate::ir::Instr;
 use crate::template::render_call;
 use crate::value::{eval, EvalError, Value};
@@ -249,10 +249,12 @@ pub fn check(ir: &[Instr], ctx: &mut Context, instance: &str) -> CheckOutcome {
                     st.failure_reason = Some(reason);
                     CheckOutcome::Failed
                 }
-                None => match check_instruction(call, &ctx.vars, instance) {
-                    Ok(instruction) => CheckOutcome::Instruction(instruction),
-                    Err(e) => CheckOutcome::Error(e),
-                },
+                None => {
+                    match check_instruction(call, into.as_deref(), &ctx.vars, &ctx.meta, instance) {
+                        Ok(instruction) => CheckOutcome::Instruction(instruction),
+                        Err(e) => CheckOutcome::Error(e),
+                    }
+                }
             }
         }
     }
@@ -280,19 +282,13 @@ fn check_kind(call: &Call, into: Option<&str>) -> CheckKind {
 
 fn check_instruction(
     call: &Call,
+    into: Option<&str>,
     vars: &HashMap<String, Value>,
+    meta: &WorkflowMeta,
     instance: &str,
 ) -> Result<String, EvalError> {
-    let instruction = call
-        .args
-        .iter()
-        .find_map(|arg| match &arg.value {
-            CallArg::Named { name, value } if name == "check" => Some(value),
-            _ => None,
-        })
-        .map(|expr| eval(&expr.value, vars).map(|value| value.render()))
-        .transpose()?
-        .unwrap_or_default();
+    let tmpl = crate::template::resolve_template_with_meta(&call.callee, meta);
+    let instruction = crate::template::render_check(&tmpl, call, into, Some(vars), instance)?;
     Ok(format!(
         "{instruction}\n\nReport the verification result:\n- Passed: `steer instance set {instance} checked {{\"passed\":true}}`\n- Failed: `steer instance set {instance} checked {{\"passed\":false,\"reason\":\"<why it failed>\"}}`"
     ))

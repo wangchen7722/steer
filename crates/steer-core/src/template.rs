@@ -13,7 +13,7 @@ use steer_syntax::ast::{Call, CallArg, Expr};
 use steer_syntax::Spanned;
 
 use crate::context::WorkflowMeta;
-use crate::value::{eval_literal, Value};
+use crate::value::{eval, eval_literal, EvalError, Value};
 
 /// A parsed template, ready to render against a context.
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +282,11 @@ pub struct NodeTemplate {
     pub params: Vec<ParamSpec>,
     /// The Jinja2 + Markdown body (the rendered instruction text).
     pub body: String,
+    /// Optional Jinja2 template for custom check instruction rendering.
+    /// If present, this is rendered (with `{{ check }}` in context) instead of
+    /// the default plain-text check value. The `<report>` section is always
+    /// auto-appended by the VM and must not be included here.
+    pub on_check: Option<String>,
 }
 
 impl NodeTemplate {
@@ -297,9 +302,11 @@ impl NodeTemplate {
 /// the body with a minimal formatter (a required `instruction` positional).
 pub fn parse_template(src: &str) -> NodeTemplate {
     if let Some((formatter_src, body)) = split_front_matter(src) {
+        let (params, on_check) = parse_front_matter(formatter_src);
         NodeTemplate {
-            params: parse_formatter(formatter_src),
+            params,
             body: body.to_string(),
+            on_check,
         }
     } else {
         NodeTemplate {
@@ -310,6 +317,7 @@ pub fn parse_template(src: &str) -> NodeTemplate {
                 default: None,
             }],
             body: src.to_string(),
+            on_check: None,
         }
     }
 }
@@ -327,16 +335,57 @@ fn split_front_matter(src: &str) -> Option<(&str, &str)> {
     Some((formatter, body))
 }
 
-/// Parse the formatter section into [`ParamSpec`]s. Each non-empty line (after
-/// an optional `formatter:` header) is `name: type[, required][, default=value]`.
-fn parse_formatter(src: &str) -> Vec<ParamSpec> {
+/// Parse the front-matter section into [`ParamSpec`]s and an optional
+/// `on_check` template. A `parameter:` header line is allowed and skipped.
+/// Each remaining non-empty line (outside `on_check:` blocks) has the form
+/// `name: type[, required][, default=value]`. An `on_check: |` line starts a
+/// YAML literal block; subsequent indented lines are collected as the
+/// `on_check` template body.
+fn parse_front_matter(src: &str) -> (Vec<ParamSpec>, Option<String>) {
     let mut params = Vec::new();
+    let mut on_check: Option<String> = None;
+    let mut in_on_check_block = false;
+    let mut on_check_lines: Vec<String> = Vec::new();
+
     for line in src.lines() {
-        let line = line.trim();
-        if line.is_empty() || line == "formatter:" {
+        // Collect indented lines inside a `on_check: |` block.
+        if in_on_check_block {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                // Strip one level of leading whitespace (YAML 2-space indent).
+                let stripped = line.strip_prefix("  ").unwrap_or(line);
+                on_check_lines.push(stripped.to_string());
+                continue;
+            } else if line.is_empty() {
+                on_check_lines.push(String::new());
+                continue;
+            } else {
+                // Non-indented, non-empty line ends the block.
+                in_on_check_block = false;
+                on_check = Some(on_check_lines.join("\n").trim_end().to_string());
+                on_check_lines.clear();
+                // Fall through to process this line normally.
+            }
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "parameter:" {
             continue;
         }
-        let Some((name, rest)) = line.split_once(':') else {
+
+        // Detect `on_check:` key.
+        if let Some(rest) = trimmed.strip_prefix("on_check:") {
+            let rest = rest.trim();
+            if rest == "|" {
+                in_on_check_block = true;
+                on_check_lines.clear();
+            } else if !rest.is_empty() {
+                on_check = Some(rest.to_string());
+            }
+            continue;
+        }
+
+        // Parse parameter spec lines.
+        let Some((name, rest)) = trimmed.split_once(':') else {
             continue;
         };
         let name = name.trim().to_string();
@@ -365,7 +414,13 @@ fn parse_formatter(src: &str) -> Vec<ParamSpec> {
             default,
         });
     }
-    params
+
+    // Close an unterminated `on_check: |` block (at end of front-matter).
+    if in_on_check_block && !on_check_lines.is_empty() {
+        on_check = Some(on_check_lines.join("\n").trim_end().to_string());
+    }
+
+    (params, on_check)
 }
 
 fn parse_default(s: &str) -> Option<Value> {
@@ -454,6 +509,7 @@ pub fn resolve_template_with_meta(callee: &str, meta: &WorkflowMeta) -> NodeTemp
             default: None,
         }],
         body: TASK_BODY.to_string(),
+        on_check: None,
     })
 }
 
@@ -472,15 +528,21 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
         "ask" => (
             vec![
                 spec("instruction", ParamKind::String, true, None),
-                spec("return", ParamKind::String, false, None),
+                spec("return", ParamKind::String, true, None),
                 spec("check", ParamKind::String, false, None),
+                spec("produce", ParamKind::List, false, None),
             ],
             ASK_BODY,
         ),
         "command" => (
             vec![
                 spec("instruction", ParamKind::String, true, None),
-                spec("return", ParamKind::String, false, None),
+                spec(
+                    "return",
+                    ParamKind::String,
+                    true,
+                    Some(Value::Str("output".into())),
+                ),
                 spec("produce", ParamKind::List, false, None),
                 spec("check", ParamKind::String, false, None),
             ],
@@ -489,8 +551,14 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
         "collect" => (
             vec![
                 spec("instruction", ParamKind::String, true, None),
-                spec("return", ParamKind::String, false, None),
+                spec(
+                    "return",
+                    ParamKind::String,
+                    true,
+                    Some(Value::Str("result".into())),
+                ),
                 spec("check", ParamKind::String, false, None),
+                spec("produce", ParamKind::List, false, None),
             ],
             COLLECT_BODY,
         ),
@@ -498,6 +566,8 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
             vec![
                 spec("instruction", ParamKind::String, true, None),
                 spec("return", ParamKind::None, false, None),
+                spec("check", ParamKind::String, false, None),
+                spec("produce", ParamKind::List, false, None),
             ],
             PRINT_BODY,
         ),
@@ -505,6 +575,8 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
             vec![
                 spec("instruction", ParamKind::String, true, None),
                 spec("return", ParamKind::IntrinsicBool, false, None),
+                spec("check", ParamKind::String, false, None),
+                spec("produce", ParamKind::List, false, None),
             ],
             JUDGE_BODY,
         ),
@@ -513,6 +585,7 @@ fn fallback_template(name: &str) -> Option<NodeTemplate> {
     Some(NodeTemplate {
         params,
         body: body.to_string(),
+        on_check: None,
     })
 }
 
@@ -528,55 +601,104 @@ fn spec(name: &str, kind: ParamKind, required: bool, default: Option<Value>) -> 
 // ---- built-in action-node templates (const fallbacks) ----
 //
 // Each template renders to Markdown that the agent reads as its instruction.
-// The context carries: `instruction` (positional arg), `target` (the variable
-// to `steer set` or `<var>`), and runtime-rendered named args such as `return`
-// and `produce` when present. `check` is handled by the VM, not Jinja.
+// The context carries: `instruction` (positional arg), `steer_target` (the
+// variable to `steer set` or `<var>`), `steer_instance` (the run instance
+// name), and runtime-rendered named args such as `return` and `produce` when
+// present. `check` is handled by the VM, not Jinja.
 
 /// `task` — the universal agent primitive. Do work, optionally report a value,
 /// optionally verify, optionally produce files.
 const TASK_BODY: &str = "\
 {{ instruction }}
-{% if return %}- Report the result via `steer set {{ target }}` in this format: {{ return }}
-{% endif %}{% if produce %}- Produce these files: {% for f in produce %}{{ f }} {% endfor %}
+{% if return %}- Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
+{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
 {% endif %}";
 
 /// `ask` — obtain a value from the human user (e.g. via AskUserQuestion).
 const ASK_BODY: &str = "\
 **Ask the user:** {{ instruction }}
-{% if return %}- Report their answer via `steer set {{ target }}` in this format: {{ return }}
+{% if return %}- Report their answer via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
+{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
 {% endif %}";
 
 /// `command` — run a shell command and capture its output.
 const COMMAND_BODY: &str = "\
 **Shell command:** {{ instruction }}
-{% if return %}- Report the output via `steer set {{ target }}` in this format: {{ return }}
-{% endif %}{% if produce %}- Expected files: {% for f in produce %}{{ f }} {% endfor %}
+{% if return %}- Report the output via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
+{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
 {% endif %}";
 
 /// `collect` — a reasoning value op: the agent investigates/analyzes on its own
-/// and reports the value that work produces (unlike `ask`, sourced from the
-/// user, or `command`, sourced from the shell).
+/// and reports the value that work produces.
 const COLLECT_BODY: &str = "\
 {{ instruction }}
-- Reasoning op: derive the value from YOUR OWN investigation and analysis — read the relevant files or code, trace or reproduce the behavior, reason it through. This is not `ask` (the user) or `command` (a shell). Ground the answer in what you examined; do not guess.
-{% if return %}- Report the result via `steer set {{ target }}` in this format: {{ return }}
+- Do the actual work yourself: read files, trace behavior, reason it through. Ground the answer in what you examined. Do not guess or hand-wave.
+{% if return %}- Report the result via `steer instance set {{ steer_instance }} {{ steer_target }} <value>`, where <value> is the {{ return }}
+{% endif %}{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
 {% endif %}";
 
 /// `print` — output for side effects; no value, no verification.
-const PRINT_BODY: &str = "{{ instruction }}";
+const PRINT_BODY: &str = "\
+{{ instruction }}
+{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+{% endif %}";
 
 /// `judge` — a boolean judgment. Unlike value nodes it has no `return=`
 /// argument; a boolean is its intrinsic result.
 const JUDGE_BODY: &str = "\
 {{ instruction }}
 
-Answer with only `true` or `false`. Set it via `steer set {{ target }}`.";
+Answer with only `true` or `false`. Set it via `steer instance set {{ steer_instance }} {{ steer_target }} true` (or `false`).
+{% if produce %}- Write or update the following files: {% for f in produce %}{{ f }} {% endfor %}
+{% endif %}";
+
+/// Render the check instruction for a call, using the template's `on_check`
+/// field if defined, or falling back to the plain evaluated `check=` value.
+///
+/// The rendered text does NOT include the `<report>` section; the caller
+/// (the VM) appends it automatically so the agent always knows how to
+/// report the verification result.
+///
+/// Returns an error if the `check=` argument expression cannot be evaluated.
+pub fn render_check(
+    tmpl: &NodeTemplate,
+    call: &Call,
+    into: Option<&str>,
+    vars: Option<&HashMap<String, Value>>,
+    instance: &str,
+) -> Result<String, EvalError> {
+    // Evaluate the `check=` argument value.
+    let check_value = call
+        .args
+        .iter()
+        .find_map(|arg| match &arg.value {
+            CallArg::Named { name, value } if name == "check" => Some(value),
+            _ => None,
+        })
+        .map(|expr| match vars {
+            Some(v) => eval(&expr.value, v),
+            None => Ok(eval_literal(expr)),
+        })
+        .transpose()?
+        .unwrap_or(Value::Null);
+
+    match &tmpl.on_check {
+        Some(on_check_src) if !on_check_src.is_empty() => {
+            let on_check_tmpl =
+                Template::parse(on_check_src).expect("on_check template must parse");
+            let mut ctx = build_context(call, into, vars, instance);
+            ctx.insert("check".to_string(), check_value);
+            Ok(on_check_tmpl.render(&ctx))
+        }
+        _ => Ok(check_value.render()),
+    }
+}
 
 /// Render the instruction string for a single call.
 ///
 /// `into` is the variable that receives the call's value when the call is
-/// assigned or returned; it is exposed to the template as `target` so the
-/// agent knows which variable to `steer set`.
+/// assigned or returned; it is exposed to the template as `steer_target` so
+/// the agent knows which variable to `steer set`.
 ///
 /// The template is resolved by [`resolve_template`]: file → fallback const →
 /// generic task. Unknown callees use the generic task template.
@@ -593,12 +715,12 @@ pub fn render_call(
 }
 
 /// Build the template context from a call's arguments: the first positional
-/// argument is the `instruction`, named arguments map by name, and `target`
-/// carries the assignment variable, or `<var>` when there is none. The `return`
-/// argument is only exposed when there is a real receiver; bare calls do not
-/// produce a `steer set <var>` prompt. When `vars` is provided for a real run,
-/// argument expressions are evaluated against the current scope; otherwise they
-/// degrade to static placeholders.
+/// argument is `instruction`, named arguments map by name, `steer_target`
+/// carries the assignment variable (or `<var>`), and `steer_instance` carries
+/// the run instance name. The `return` argument is only exposed when there is
+/// a real receiver; bare calls do not produce a `steer instance set <var>` prompt.
+/// When `vars` is provided for a real run, argument expressions are evaluated
+/// against the current scope; otherwise they degrade to static placeholders.
 fn build_context(
     call: &Call,
     into: Option<&str>,
@@ -607,10 +729,13 @@ fn build_context(
 ) -> HashMap<String, Value> {
     let mut ctx = HashMap::new();
     ctx.insert(
-        "target".to_string(),
+        "steer_target".to_string(),
         Value::Str(into.unwrap_or("<var>").to_string()),
     );
-    ctx.insert("instance".to_string(), Value::Str(instance.to_string()));
+    ctx.insert(
+        "steer_instance".to_string(),
+        Value::Str(instance.to_string()),
+    );
     if let Some(CallArg::Positional(e)) = call.args.first().map(|a| &a.value) {
         ctx.insert("instruction".to_string(), arg_value(e, vars));
     }
@@ -797,8 +922,8 @@ mod tests {
             "task(\"do it\", return=\"path\", produce=[\"a\", \"b\"], check=\"ok\")\n",
         );
         assert!(out.contains("do it"));
-        assert!(!out.contains("steer set <var>"));
-        assert!(out.contains("Produce these files"));
+        assert!(!out.contains("steer instance set <var>"));
+        assert!(out.contains("Write or update the following files"));
         assert!(out.contains("a"));
         assert!(out.contains("b"));
         assert!(!out.contains("Verify: ok"));
@@ -809,14 +934,17 @@ mod tests {
     #[test]
     fn render_print_uses_minimal_body() {
         let out = first_call_instruction("print(\"hello\")\n");
-        assert_eq!(out, "hello");
+        // print has no return/check/produce; the rendered body is the instruction
+        // plus a trailing newline from the `{% if produce %}` block that is
+        // skipped but leaves the line break.
+        assert!(out.contains("hello"), "expected 'hello' in: {out}");
     }
 
     #[test]
     fn render_unknown_callee_falls_back_to_value_template() {
         let out = first_call_instruction("custom(\"thing\", return=\"x\")\n");
         assert!(out.contains("thing"));
-        assert!(!out.contains("steer set <var>"));
+        assert!(!out.contains("steer instance set <var>"));
     }
 
     #[test]
@@ -835,7 +963,7 @@ mod tests {
             &WorkflowMeta::default(),
             "<name>",
         );
-        assert!(out.contains("steer set out"));
+        assert!(out.contains("steer instance set") && out.contains("out"));
         assert!(out.contains("path"));
     }
 
@@ -858,7 +986,7 @@ mod tests {
         );
         assert!(out.contains("is the build green?"));
         assert!(out.contains("`true` or `false`"));
-        assert!(out.contains("steer set passed"));
+        assert!(out.contains("steer instance set") && out.contains("passed"));
         // judge carries no verify/return lines
         assert!(!out.contains("Verify"));
         assert!(!out.contains("Expected files"));
@@ -889,8 +1017,12 @@ mod tests {
         let col_out = first_call_instruction("collect(\"do\", return=\"x\")\n");
         assert!(!task_out.contains("Ask the user"));
         assert!(ask_out.contains("Ask the user"));
-        assert!(cmd_out.contains("Shell command"));
-        assert!(col_out.contains("Reasoning op"));
+        assert!(cmd_out.contains("shell command") || cmd_out.contains("Shell command"));
+        assert!(
+            col_out.contains("Investigate")
+                || col_out.contains("your own")
+                || col_out.contains("yourself")
+        );
         // collect must not read like ask or command.
         assert!(!col_out.contains("Ask the user"));
         assert!(!col_out.contains("Shell command"));
@@ -899,34 +1031,23 @@ mod tests {
     #[test]
     fn collect_template_conveys_reasoning_semantic() {
         // `collect` is a value op whose value must come from the agent's OWN
-        // reasoning/investigation — its defining distinction from `ask` (user)
-        // and `command` (shell). The rendered prompt must say so, not merely
-        // echo the instruction plus a report-back line.
+        // reasoning/investigation. The rendered prompt must convey this.
         let out = first_call_instruction("collect(\"find the root cause\", return=\"summary\")\n");
         assert!(
             out.contains("find the root cause"),
             "instruction missing: {out}"
         );
         assert!(
-            out.contains("Reasoning op") || out.contains("investigation"),
+            out.contains("Investigate") || out.contains("your own") || out.contains("yourself"),
             "collect reasoning semantic missing: {out}",
-        );
-        assert!(
-            !out.contains("Ask the user"),
-            "collect looks like ask: {out}"
-        );
-        assert!(
-            !out.contains("Shell command"),
-            "collect looks like command: {out}"
         );
     }
 
     #[test]
     fn collect_file_template_conveys_reasoning_semantic() {
         // The shipped file template — used at runtime when
-        // `.steer/templates/default/` is present — must carry the same
-        // reasoning semantic as the fallback const, not just a bare
-        // instruction + report.
+        // `.steer/templates/default/` is present — must convey the
+        // reasoning semantic (agent does the work itself).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(".steer/templates/default/collect.j2.md");
@@ -934,7 +1055,9 @@ mod tests {
             .unwrap_or_else(|_| panic!("collect template missing at {}", path.display()));
         let lower = body.to_lowercase();
         assert!(
-            lower.contains("reasoning op") || lower.contains("investigation"),
+            lower.contains("investigate")
+                || lower.contains("your own")
+                || lower.contains("yourself"),
             "collect file template lacks reasoning semantic:\n{body}",
         );
     }
@@ -963,5 +1086,96 @@ mod tests {
         assert_eq!(out, "CUSTOM body");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- on_check ----
+
+    #[test]
+    fn parse_front_matter_with_on_check_block() {
+        let src = "\
+parameter:
+  instruction: string, required
+  check: string
+on_check: |
+  Verify the following:
+  <check>{{ check }}</check>
+  Inspect the work.
+";
+        let (params, on_check) = super::parse_front_matter(src);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "instruction");
+        assert_eq!(params[1].name, "check");
+        let oc = on_check.expect("on_check should be parsed");
+        assert!(oc.contains("Verify the following:"));
+        assert!(oc.contains("{{ check }}"));
+        assert!(oc.contains("Inspect the work."));
+    }
+
+    #[test]
+    fn parse_front_matter_with_on_check_inline() {
+        let src = "parameter:\n  instruction: string, required\non_check: simple value\n";
+        let (params, on_check) = super::parse_front_matter(src);
+        assert_eq!(params.len(), 1);
+        assert_eq!(on_check, Some("simple value".to_string()));
+    }
+
+    #[test]
+    fn parse_front_matter_without_on_check() {
+        let src = "parameter:\n  instruction: string, required\n  check: string\n";
+        let (params, on_check) = super::parse_front_matter(src);
+        assert_eq!(params.len(), 2);
+        assert!(on_check.is_none());
+    }
+
+    #[test]
+    fn parse_front_matter_on_check_at_end() {
+        let src = "\
+parameter:
+  instruction: string, required
+on_check: |
+  Line one
+  Line two
+";
+        let (_, on_check) = super::parse_front_matter(src);
+        let oc = on_check.expect("on_check should be parsed");
+        assert!(oc.contains("Line one"));
+        assert!(oc.contains("Line two"));
+    }
+
+    #[test]
+    fn render_check_with_on_check_template() {
+        let tmpl = NodeTemplate {
+            params: vec![spec("instruction", ParamKind::String, true, None)],
+            body: "{{ instruction }}".to_string(),
+            on_check: Some("Verify: <check>{{ check }}</check> for {{ steer_target }}".to_string()),
+        };
+        let m = steer_syntax::parse("x = task(\"do\", check=\"ok\")\n").unwrap();
+        let steer_syntax::ast::Stmt::Assign { target, value } = &m.body[0].value else {
+            panic!("not an assignment")
+        };
+        let steer_syntax::ast::Expr::Call(c) = &value.value else {
+            panic!("not a call")
+        };
+        let vars = HashMap::new();
+        let out = render_check(&tmpl, c, Some(target.as_str()), Some(&vars), "<name>").unwrap();
+        assert!(out.contains("Verify:"), "got: {out}");
+        assert!(out.contains("<check>ok</check>"), "got: {out}");
+        assert!(out.contains("for x"), "got: {out}");
+    }
+
+    #[test]
+    fn render_check_fallback_without_on_check() {
+        let tmpl = NodeTemplate {
+            params: vec![spec("instruction", ParamKind::String, true, None)],
+            body: "{{ instruction }}".to_string(),
+            on_check: None,
+        };
+        let m = steer_syntax::parse("task(\"do\", check=\"verify this\")\n").unwrap();
+        let steer_syntax::ast::Stmt::Call(c) = &m.body[0].value else {
+            panic!("not a call")
+        };
+        let vars = HashMap::new();
+        let out = render_check(&tmpl, c, None, Some(&vars), "<name>").unwrap();
+        assert_eq!(out, "verify this");
     }
 }
