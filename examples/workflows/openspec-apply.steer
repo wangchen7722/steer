@@ -1,0 +1,51 @@
+// Workflow: openspec-apply
+// Drives the back half of the OpenSpec + Superpowers spec-driven workflow:
+// apply (execute) -> verify.
+// Expects the openspec-propose workflow to have already produced brainstorm.md,
+// proposal.md, specs/, design.md, tasks.md, and plan.md in the change
+// directory. Reuses the same .steer/templates/openspec-superpowers/ template directory.
+
+@template = "openspec-superpowers"
+@context = "OpenSpec + Superpowers apply phase: execute the plan via subagent-driven-development, then verify. Requires the propose workflow to have run first."
+
+// The change directory name under openspec/changes/. Must match the one used
+// in the propose workflow so this workflow reads the same artifacts.
+change = ask("What is the change name to apply? Must match an existing openspec/changes/<change>/ directory produced by the propose workflow.", return="change name in kebab-case")
+
+// Gate: verify ALL Superpowers + OpenSpec skills required by the apply + verify
+// phases are available. One judge per skill so the STOP message names exactly
+// which one is missing. If any is missing, halt before doing any work.
+has_subagent = judge("Is `superpowers:subagent-driven-development` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_subagent
+    print("STOP: `superpowers:subagent-driven-development` is required but is not in your available skills list. Install the Superpowers skills and re-run this workflow.")
+    return
+end
+has_tdd = judge("Is `superpowers:test-driven-development` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_tdd
+    print("STOP: `superpowers:test-driven-development` is required but is not in your available skills list. Install the Superpowers skills and re-run this workflow.")
+    return
+end
+has_review = judge("Is `superpowers:requesting-code-review` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_review
+    print("STOP: `superpowers:requesting-code-review` is required but is not in your available skills list. Install the Superpowers skills and re-run this workflow.")
+    return
+end
+has_verify_skill = judge("Is `openspec-verify-change` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_verify_skill
+    print("STOP: `openspec-verify-change` is required for the verify phase but is not in your available skills list. Install it and re-run this workflow.")
+    return
+end
+
+// Phase: apply (execute) — implement the plan, update tasks.md checkboxes.
+// First verify the CLI tools mentioned in plan.md are available (`which <tool>`),
+// asking the user about any missing tool before proceeding. Then execute the
+// plan micro-tasks.
+apply_change("Execute openspec/changes/{change}/plan.md micro-tasks. Update openspec/changes/{change}/tasks.md checkboxes as coarse tasks complete.",
+              check="Confirm every CLI tool from openspec/changes/{change}/plan.md is available or explicitly confirmed by the user, every checkbox in openspec/changes/{change}/tasks.md is `- [x]`, and any spec changes triggered during implementation are reflected in openspec/changes/{change}/specs/")
+
+// Phase: verify — post-implementation verification via openspec-verify-change.
+verify("Run openspec-verify-change against openspec/changes/{change}/. Produce verify.md covering all 7 checks. Confirm all tasks.md checkboxes are `- [x]` and all code changes are committed.",
+       produce=["openspec/changes/{change}/verify.md"],
+       check="Confirm openspec/changes/{change}/verify.md exists, all 7 checks are documented, the Overall Decision is PASS, and no `- [ ]` gap remains")
+
+print("Apply phase complete for change {change}. Review openspec/changes/{change}/verify.md; if PASS, the change is ready to archive.")

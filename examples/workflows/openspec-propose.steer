@@ -1,0 +1,62 @@
+// Workflow: openspec-propose
+// Drives the front half of the OpenSpec + Superpowers spec-driven workflow:
+// brainstorm -> proposal -> specs -> design -> tasks -> plan.
+// Ends with a human review gate so the user can interact before the apply
+// workflow runs. All phases render through .steer/templates/openspec-superpowers/.
+// The apply + verify phases live in openspec-apply.steer, which reuses the
+// same template directory.
+
+@template = "openspec-superpowers"
+@context = "OpenSpec + Superpowers propose phase: brainstorm, proposal, specs, design, tasks, plan. Pauses for human review before apply."
+
+// The change directory name under openspec/changes/. Asked once so every phase
+// can interpolate it into produce paths.
+change = ask("What is the change name? This becomes the openspec/changes/<change>/ directory (kebab-case, e.g. add-linting).",
+             return="change name in kebab-case")
+
+// Phase: brainstorm — raw capture of collaborative exploration.
+// Gate: superpowers:brainstorming must be available, else halt.
+has_brainstorming = judge("Is `superpowers:brainstorming` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_brainstorming
+    print("STOP: `superpowers:brainstorming` is required for the brainstorm phase but is not in your available skills list. Install the Superpowers skills and re-run this workflow.")
+    return
+end
+brainstorm("Explore the change collaboratively using superpowers:brainstorming.",
+           produce=["openspec/changes/{change}/brainstorm.md"],
+           check="Confirm openspec/changes/{change}/brainstorm.md exists and contains verbatim brainstorming output, not a restructured template")
+
+// Phase: proposal — motivation and scope; reads brainstorm.md.
+proposal("Establish why this change is needed. Sections: Why (problem/opportunity, why now), What Changes (bullet list, mark BREAKING), Capabilities (New kebab-case names + Modified existing specs, check openspec/specs/ for names), Impact (code, APIs, dependencies, docs, performance, security).",
+         produce=["openspec/changes/{change}/proposal.md"],
+         check="Confirm openspec/changes/{change}/proposal.md contains Why, What Changes, Capabilities (New + Modified), and Impact sections, and every New Capability name is kebab-case")
+
+// Phase: specs — one spec file per capability; delta operations.
+specs("Create one spec file per capability listed in the proposal's Capabilities section. Use ADDED/MODIFIED/REMOVED/RENAMED delta operations and #### Scenario headers with WHEN/THEN.",
+      produce=["openspec/changes/{change}/specs/**/*.md"],
+      check="Confirm one spec file exists per capability listed in openspec/changes/{change}/proposal.md, every requirement has at least one `#### Scenario`, and scenarios use exactly 4 hashtags")
+
+// Phase: design — technical design; may re-invoke brainstorming.
+design("Explain HOW to implement the change. Cover Context, Goals/Non-Goals, Architecture, Decisions (with rationale + alternatives), Risks/Trade-offs ([Risk] -> Mitigation), and Migration Plan. Cover every requirement in specs/.",
+       produce=["openspec/changes/{change}/design.md"],
+       check="Confirm openspec/changes/{change}/design.md contains Context, Goals/Non-Goals, Decisions (each with rationale + alternatives), Risks/Trade-offs, and Migration Plan, and covers every requirement in specs/")
+
+// Phase: tasks — implementation checklist with trackable checkboxes.
+tasks("Break down the implementation into a checkbox task list under ## numbered group headings. Each task is `- [ ] X.Y ...`, small enough for one session, ordered by dependency.",
+      produce=["openspec/changes/{change}/tasks.md"],
+      check="Confirm openspec/changes/{change}/tasks.md uses `##` numbered group headings and every task is a `- [ ] X.Y` checkbox")
+
+// Phase: plan — micro-task plan via superpowers:writing-plans.
+// Gate: superpowers:writing-plans must be available, else halt.
+has_writing_plans = judge("Is `superpowers:writing-plans` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_writing_plans
+    print("STOP: `superpowers:writing-plans` is required for the plan phase but is not in your available skills list. Install the Superpowers skills and re-run this workflow.")
+    return
+end
+plan("Decompose tasks.md and design.md into a micro-task plan with RED-GREEN-REFACTOR per task, concrete file paths, and complete code blocks. No placeholder patterns.",
+     produce=["openspec/changes/{change}/plan.md"],
+     check="Confirm openspec/changes/{change}/plan.md contains concrete tasks with exact file paths and code blocks, and no placeholder patterns (TBD/TODO/implement later)")
+
+// Human review gate. The spec-driven workflow is interactive here: the user
+// reviews the proposal artifacts, may request changes, then runs the apply
+// workflow (openspec-apply) to implement.
+print("Propose phase complete for change {change}. Artifacts are in openspec/changes/{change}/. Review them with the user; when ready, run the openspec-apply workflow to implement and verify.")

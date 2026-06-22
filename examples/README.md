@@ -1,18 +1,20 @@
 # steer examples
 
-This directory contains realistic workflows that can be run from this directory.
-The example templates live under `.steer/templates/` because the CLI resolves
-templates relative to the current working directory.
+This directory contains example workflows and templates that demonstrate steer's
+language features and the OpenSpec + Superpowers integration.
 
-Run from `/root/steer/examples`:
+Run from the repo root:
 
 ```bash
-cargo run -q -p steer-cli --manifest-path ../Cargo.toml -- workflow validate workflows/bugfix-loop.steer
-cargo run -q -p steer-cli --manifest-path ../Cargo.toml -- workflow simulate workflows/openspec-change.steer
+steer workflow validate examples/workflows/openspec-propose.steer
+steer workflow simulate examples/workflows/openspec-propose.steer
 ```
 
 Workflows:
 
-- `workflows/bugfix-loop.steer` — root-cause-first bugfix with a bounded retry loop.
-- `workflows/openspec-change.steer` — OpenSpec-style proposal -> design -> specs -> tasks flow.
-- `workflows/template-switch.steer` — demonstrates `@template` switching with a planning template.
+- `openspec-propose.steer` — OpenSpec propose phase: brainstorm, proposal, specs, design, tasks, plan. Pauses for human review.
+- `openspec-apply.steer` — OpenSpec apply phase: execute the plan, then verify. Requires the propose workflow to have run first.
+
+Templates:
+
+- `templates/openspec-superpowers/` — Custom callee templates for the OpenSpec phases (`brainstorm`, `proposal`, `specs`, `design`, `tasks`, `plan`, `apply_change`, `verify`). The workflows activate this directory via `@template = "openspec-superpowers"`.
