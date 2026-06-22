@@ -1,21 +1,23 @@
 # steer
 
-A tiny **control unit (PC)** that drives external coding agents (Claude Code,
-Codex, …) through declarative, verifiable workflows.
+A **control unit for agent-driven dynamic workflows**. steer interprets a
+workflow written as code + natural language, advances it step by step, renders
+each action as an instruction for an external agent to execute, and writes the
+agent's reported results back into the execution context.
 
-steer does **not** run your code, touch the filesystem, or spawn agents. It
-holds a workflow's program counter and hands the agent one instruction at a
-time. The agent executes each instruction, reports the result back, and steer
-advances — verifying before it moves on. All control lives in steer; all
-execution lives in the agent.
+steer itself only runs control flow (assignment, branching, loops, functions),
+renders instructions, and manages state — the program counter, variables, call
+stack, and per-step verification results, all serialised to disk. It does **not**
+run shell commands, touch the filesystem, spawn processes, or touch the
+terminal. Every interaction with the outside world is rendered into an
+instruction for the agent, and results flow back via `steer instance set`.
 
-> Design and rationale: [`IDEA.md`](./IDEA.md).
+> Design and rationale: [`docs/design.md`](./docs/design.md). Behavior specs:
+> [`docs/specs/`](./docs/specs/index.md).
 
-## Status
+## What steer provides
 
-Implemented (v1):
-
-- **Language** (`steer-syntax`): lexer, parser, AST for the `.steer` DSL —
+- **Language** (`steer-syntax`): a lexer, parser, and AST for the `.steer` DSL —
   assignments, `if/elseif/else`, `loop…until`, `for x in list`, `func/return`,
   calls with positional + named arguments, strings with `{var}` interpolation,
   arithmetic, comparison, and `and`/`or`/`not` logical operators.
@@ -29,8 +31,6 @@ Implemented (v1):
   `task`/`ask`/`command`/`collect`/`judge`/`print` templates, plus
   file-based `.steer/templates/<dir>/<node>.j2.md` overrides selected by
   `@template`.
-
-Not yet: `audit.jsonl`; multi-run history.
 
 ## Build
 
@@ -111,8 +111,9 @@ loads `.steer/workflows/bugfix-loop.steer`.
 crates/steer-syntax   lexer, parser, AST (LSP-friendly, no I/O)
 crates/steer-core     validation, templates, IR, VM, instance storage
 crates/steer-cli      the `steer` binary
-examples/             realistic example workflows and example templates
-.claude/skills/steer/ the agent skill that drives a run
+.steer/               shipped workflows, templates, and instance storage
+docs/                 design rationale and behavior specs
+.claude/skills/       the agent skills that author and drive workflows
 ```
 
 ## License

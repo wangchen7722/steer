@@ -36,21 +36,20 @@ Rust conventions live under [`docs/references/rust-code-style/`](./docs/referenc
 
 ## Project Reference Files
 
-- **`IDEA.md`** — Design rationale and discussion notes between the user and the model.
-  Records what has been thought through; open/undecided items are explicitly marked
-  and are **not** to be treated as conclusions. Read this for *why* steer is designed
-  the way it is (control-unit vs. execution-unit model, the "steer never touches the
-  outside world" principle, language/task/template design). It is written in Chinese.
+- **`docs/design.md`** — Design rationale for steer. Read this for *why* steer is
+  designed the way it is (control-unit vs. execution-unit model, the "steer never
+  touches the outside world" principle, language/task/template design). It is written
+  in Chinese.
 - **`README.md`** — How to use the steer **tool**: build/test commands, the `.steer`
   language syntax, the CLI surface, and the repo layout. Read this for *how to run and
   use* steer.
-- **`docs/references/behavior-specs.md`** — Behavior specifications (BDD,
-  Given/When/Then) for the current tool. A living record of implemented behavior
-  and requirements so long-running work is not lost.
+- **`docs/specs/`** — Behavior specifications (BDD, Given/When/Then) for the current
+  tool, organized by implementation layer. A living record of implemented behavior and
+  requirements so long-running work is not lost. Start at `docs/specs/index.md`.
 
-When a task needs design context, consult `IDEA.md`; for CLI/syntax/usage,
+When a task needs design context, consult `docs/design.md`; for CLI/syntax/usage,
 consult `README.md`; for expected behavior of a feature, consult
-`docs/references/behavior-specs.md`.
+`docs/specs/`.
 
 ## Documentation Index Convention (`docs/`)
 

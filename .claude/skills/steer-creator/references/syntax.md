@@ -241,7 +241,6 @@ print("workflow complete for {bug}")
 | `return` | string | Varies | Expected format of the result |
 | `check` | string | No | Verification instruction (enables checked flow) |
 | `produce` | list | No | Files the step should create |
-| `spawn` | bool | No | Whether to use a sub-agent |
 
 - `return` is required for `ask`, optional for `task`, defaults for `command` and `collect`.
 - `judge` has no `return` argument (intrinsically boolean).

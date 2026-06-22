@@ -1,5 +1,10 @@
 {
-  "enabledPlugins": {
-    "superpowers@superpowers-marketplace": true
-  }
+  "permissions": {
+      "allow": [
+        "Bash(steer *)",
+        "Bash(cargo test *)",
+        "Bash(cargo fmt *)",
+        "Bash(cargo clippy *)"
+      ]
+    }
 }
