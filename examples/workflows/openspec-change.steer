@@ -1,0 +1,26 @@
+// OpenSpec-style change flow: proposal -> design -> specs -> tasks.
+change = ask("What change should be proposed?", return="short change slug")
+
+proposal = task("Draft openspec proposal for {change}: problem, goals, non-goals, and user impact",
+                return="proposal file path",
+                produce=["specs/changes/{change}/proposal.md"],
+                check="confirm proposal.md states the problem, goals, non-goals, and user impact")
+
+design = task("Draft technical design for {change} based on {proposal}: architecture, data flow, risks",
+              return="design file path",
+              produce=["specs/changes/{change}/design.md"],
+              check="confirm design.md covers architecture, data flow, alternatives, and risks")
+
+areas = ["api", "runtime", "cli"]
+for area in areas
+    task("Update the {area} spec delta for {change} using {proposal} and {design}",
+         produce=["specs/changes/{change}/specs/{area}.md"],
+         check="confirm the {area} spec delta has ADDED or MODIFIED requirements with scenarios")
+end
+
+task_list = task("Write implementation tasks for {change}, ordered as small verifiable commits",
+                 return="tasks file path",
+                 produce=["specs/changes/{change}/tasks.md"],
+                 check="confirm tasks.md is ordered, independently testable, and references specs")
+
+print("openspec package ready: {proposal}, {design}, {task_list}")

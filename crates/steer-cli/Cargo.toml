@@ -1,0 +1,18 @@
+[package]
+name = "steer-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "steer"
+path = "src/main.rs"
+
+[dependencies]
+steer-core.workspace = true
+steer-syntax.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,38 @@
+[workspace]
+members = ["crates/steer-syntax", "crates/steer-core", "crates/steer-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/wangchen7722/steer"
+description = "A tiny control unit (PC) that drives external coding agents through declarative, verifiable workflows."
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+steer-syntax = { path = "crates/steer-syntax", version = "0.1.0" }
+steer-core = { path = "crates/steer-core", version = "0.1.0" }
+
+[profile.release]
+lto = true
+
+# Lint policy: the hard gate is `cargo clippy --all-targets -- -D warnings`,
+# clippy's default set, also written `clippy::all`. Pedantic, `unwrap_used`,
+# `missing_docs`, and the `print_*` lints are intentionally NOT enabled — the
+# CLI legitimately writes to stdout, and the per-crate `lib.rs` allow-blocks
+# document the deliberate exceptions should the stricter groups be added.
+# Each crate opts in via `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"

@@ -1,0 +1,33 @@
+// Root-cause-first bugfix with a bounded retry loop.
+bug = ask("Which bug ID or issue title should be fixed?", return="bug identifier")
+
+root_cause = collect("Reproduce {bug}, inspect the failing path, and summarize the root cause",
+                     return="root cause summary",
+                     check="confirm the summary names the failing path and the observed symptom")
+
+files = command("git diff --name-only -- . ':!target'",
+                return="list of files that need or already contain changes")
+
+attempt = 0
+passed = false
+loop
+    attempt = attempt + 1
+    task("Apply the smallest safe fix for {bug} using root cause: {root_cause}. Attempt {attempt}.",
+         produce=["artifacts/bugfix-{bug}-attempt-{attempt}.md"],
+         check="run the focused regression test and confirm the bug no longer reproduces")
+    passed = judge("Did the focused regression pass for {bug} on attempt {attempt}?")
+until passed or attempt >= 3
+
+if not passed
+    task("Write a handoff for {bug}: root cause, attempted fix, failing evidence, and next diagnostic step",
+         produce=["artifacts/bugfix-{bug}-handoff.md"],
+         check="confirm the handoff includes evidence and next steps")
+    return
+end
+
+for f in files
+    task("Review {f} for accidental broad changes and simplify if possible",
+         check="confirm {f} only contains changes needed for {bug}")
+end
+
+print("bugfix workflow complete for {bug}")
