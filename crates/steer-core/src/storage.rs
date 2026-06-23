@@ -90,6 +90,27 @@ fn extract_meta(module: &steer_syntax::Module) -> WorkflowMeta {
     meta
 }
 
+/// Extract the top-level `@description = "..."` directive from a parsed
+/// workflow module. Mirrors [`extract_meta`]: the literal value is rendered to
+/// text and an empty result is treated as absent (`None`). Used by
+/// `steer workflow list` to annotate catalog entries; `@description` has no
+/// runtime effect.
+pub fn workflow_description(module: &steer_syntax::Module) -> Option<String> {
+    for s in &module.body {
+        if let steer_syntax::ast::Stmt::Meta { key, value } = &s.value {
+            if key == "description" {
+                let rendered = eval_literal(value).render();
+                return if rendered.is_empty() {
+                    None
+                } else {
+                    Some(rendered)
+                };
+            }
+        }
+    }
+    None
+}
+
 /// Load and lower the instance's workflow into its instruction stream.
 ///
 /// # Errors
@@ -223,5 +244,27 @@ mod tests {
         let result = start_instance(&dir, WORKFLOW).unwrap();
         assert_eq!(result, None);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workflow_description_extracts_directive() {
+        let m = steer_syntax::parse("@description = \"a catalog entry\"\ntask(\"x\")\n")
+            .expect("parses");
+        assert_eq!(
+            workflow_description(&m),
+            Some("a catalog entry".to_string())
+        );
+    }
+
+    #[test]
+    fn workflow_description_absent_is_none() {
+        let m = steer_syntax::parse("task(\"x\")\n").expect("parses");
+        assert_eq!(workflow_description(&m), None);
+    }
+
+    #[test]
+    fn workflow_description_empty_is_none() {
+        let m = steer_syntax::parse("@description = \"\"\ntask(\"x\")\n").expect("parses");
+        assert_eq!(workflow_description(&m), None);
     }
 }

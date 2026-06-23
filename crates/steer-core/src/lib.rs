@@ -40,7 +40,9 @@ pub mod vm;
 pub use context::{Context, Frame, Status, StepState};
 pub use ir::{lower, Instr};
 pub use simulate::{simulate, SimStep};
-pub use storage::{load_context, load_ir, save_context, start_instance, InstanceError};
+pub use storage::{
+    load_context, load_ir, save_context, start_instance, workflow_description, InstanceError,
+};
 pub use template::{
     render_call, render_check_report, render_retry_context, render_start_output,
     render_status_output, Template, TemplateError,
