@@ -25,6 +25,7 @@
 
 @template = "os-bugfix"
 @context = "OS bugfix lifecycle (Rust/GN+Ninja, multi-repo, real-device flash): intake, reproduce, root-cause, capture commands, bounded fix loop with build/flash/verify, finalize or handoff. Memory persists in bugfix/<slug>/."
+@description = "OS-domain bugfix lifecycle: intake, reproduce, root-cause, bounded fix loop with build/flash/verify."
 
 // Maximum fix attempts before handing off. Tunable.
 max_attempts = 3

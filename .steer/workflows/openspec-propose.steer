@@ -8,6 +8,7 @@
 
 @template = "openspec-superpowers"
 @context = "OpenSpec + Superpowers propose phase: brainstorm, proposal, specs, design, tasks, plan. Pauses for human review before apply."
+@description = "Spec-driven propose phase: brainstorm, proposal, specs, design, tasks, plan."
 
 // The change directory name under openspec/changes/. Asked once so every phase
 // can interpolate it into produce paths.

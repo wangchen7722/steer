@@ -7,6 +7,6 @@
 - **THEN** the binary prints a version string and exits successfully.
 
 ## Scenario: subcommands are recognized
-- **WHEN** the user runs `steer workflow {validate,simulate}` or
+- **WHEN** the user runs `steer workflow {validate,simulate,list}` or
   `steer instance {start,status,step,check,set,error}`
 - **THEN** the CLI parses the subcommand and its positional arguments.

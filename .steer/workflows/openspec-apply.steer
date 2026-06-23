@@ -7,6 +7,7 @@
 
 @template = "openspec-superpowers"
 @context = "OpenSpec + Superpowers apply phase: execute the plan via subagent-driven-development, then verify. Requires the propose workflow to have run first."
+@description = "Spec-driven apply phase: implement an openspec change and verify it."
 
 // The change directory name under openspec/changes/. Must match the one used
 // in the propose workflow so this workflow reads the same artifacts.

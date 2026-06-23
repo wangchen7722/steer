@@ -90,6 +90,7 @@ it returns `true`/`false` and needs no `return=`.
 ```
 steer workflow validate <wf>      # check a workflow
 steer workflow simulate <wf>      # print every instruction it emits
+steer workflow list [dir]         # list workflows + their @description (default: .steer/workflows/)
 
 steer instance start <wf> <name>  # create / reset an instance
 steer instance step <name>        # current instruction (no state change)

@@ -394,3 +394,106 @@ fn instance_start_without_context_omits_description() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// ---- `steer workflow list` ----
+
+/// Build a temp working dir whose `.steer/workflows/` holds the given
+/// `(name, content)` `.steer` files, for `workflow list` tests.
+fn make_workflows_dir(suffix: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let tmp = std::env::temp_dir().join(format!("steer-list-{suffix}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dir = tmp.join(".steer").join("workflows");
+    std::fs::create_dir_all(&dir).expect("make workflows dir");
+    for (name, content) in files {
+        std::fs::write(dir.join(format!("{name}.steer")), content).expect("write workflow");
+    }
+    tmp
+}
+
+#[test]
+fn list_shows_workflows_with_descriptions() {
+    let tmp = make_workflows_dir(
+        "basic",
+        &[
+            ("alpha", "@description = \"Alpha workflow\"\nprint(\"a\")\n"),
+            ("beta", "print(\"b\")\n"),
+        ],
+    );
+    let out = steer()
+        .args(["workflow", "list"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("alpha"), "stdout: {stdout}");
+    assert!(stdout.contains("Alpha workflow"), "stdout: {stdout}");
+    assert!(stdout.contains("beta"), "stdout: {stdout}");
+    assert!(stdout.contains("(no description)"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn list_honors_custom_dir() {
+    let tmp = std::env::temp_dir().join(format!("steer-list-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let custom = tmp.join("custom");
+    std::fs::create_dir_all(&custom).expect("make custom dir");
+    std::fs::write(
+        custom.join("only.steer"),
+        "@description = \"only here\"\nprint(\"x\")\n",
+    )
+    .expect("write workflow");
+    // default dir is absent -> reports no workflows
+    let out = steer()
+        .args(["workflow", "list"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no workflows"));
+    // explicit custom dir -> lists the one workflow
+    let out = steer()
+        .args(["workflow", "list", "custom"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("only"), "stdout: {stdout}");
+    assert!(stdout.contains("only here"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn list_missing_dir_reports_no_workflows() {
+    let tmp = std::env::temp_dir().join(format!("steer-list-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("make tmp dir");
+    let out = steer()
+        .args(["workflow", "list"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no workflows"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn list_marks_unparseable_file() {
+    let tmp = make_workflows_dir("broken", &[("broken", "x =\n")]);
+    let out = steer()
+        .args(["workflow", "list"])
+        .current_dir(&tmp)
+        .output()
+        .expect("run steer");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("broken"), "stdout: {stdout}");
+    assert!(stdout.contains("(unparseable)"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

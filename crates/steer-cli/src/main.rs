@@ -45,6 +45,12 @@ enum WorkflowAction {
         /// Path to the `.steer` workflow file.
         workflow: PathBuf,
     },
+    /// List workflows in a directory (default `.steer/workflows/`), printing each
+    /// workflow's name with its `@description`.
+    List {
+        /// Directory to scan for `*.steer` files. Defaults to `.steer/workflows/`.
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Parser)]
@@ -83,6 +89,7 @@ fn main() -> ExitCode {
         Resource::Workflow(w) => match w.action {
             WorkflowAction::Validate { workflow } => run_validate(&workflow),
             WorkflowAction::Simulate { workflow } => run_simulate(&workflow),
+            WorkflowAction::List { dir } => run_list(dir.as_deref()),
         },
         Resource::Instance(i) => match i.action {
             InstanceAction::Start { workflow, name } => run_instance_start(&workflow, &name),
@@ -343,4 +350,52 @@ fn run_simulate(path: &Path) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Run `steer workflow list [dir]`: enumerate `*.steer` workflows and print
+/// each name with its `@description`. Defaults to `.steer/workflows/`.
+///
+/// Never fails on a bad entry: a missing description prints `(no description)`,
+/// an unparseable file prints `(unparseable)`, an unreadable file prints
+/// `(unreadable)`, and a missing/empty directory prints
+/// `(no workflows in <dir>)` — all exit successfully.
+fn run_list(dir: Option<&Path>) -> ExitCode {
+    let dir = dir.unwrap_or_else(|| Path::new(".steer/workflows"));
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("steer") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            rows.push((stem.to_string(), read_description(&path)));
+        }
+    }
+    if rows.is_empty() {
+        println!("(no workflows in {})", dir.display());
+        return ExitCode::SUCCESS;
+    }
+    // File stems are unique within a directory, so tuple ordering sorts by name.
+    rows.sort();
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    for (name, desc) in &rows {
+        println!("{name:<width$}  {desc}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Read and parse `path`, returning its `@description` text or a placeholder.
+fn read_description(path: &Path) -> String {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return "(unreadable)".to_string(),
+    };
+    match steer_syntax::parse(&src) {
+        Ok(module) => steer_core::workflow_description(&module)
+            .unwrap_or_else(|| "(no description)".to_string()),
+        Err(_) => "(unparseable)".to_string(),
+    }
 }
