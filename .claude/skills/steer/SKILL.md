@@ -9,11 +9,27 @@ steer is a workflow interpreter: it parses a `.steer` workflow into individual i
 
 ## Input
 
-The user provides (or you derive):
-- a workflow file path (`.steer`)
-- an **instance name** (a short label for this run)
+You need two things; resolve either with **AskUserQuestion** if missing.
 
-If either is unclear, ask the user with the AskUserQuestion tool.
+- a **workflow** — a path to a `.steer` file (e.g. `./my.steer`) or a bare
+  name (e.g. `demo`, `os-bugfix`). `steer instance start` resolves a bare
+  name under `.steer/workflows/` itself, so don't look for the file — only a
+  path needs an existence check.
+- an **instance name** — a short label for this run (suggest a default
+  derived from the workflow name).
+
+If the user didn't name a workflow, discover candidates:
+
+```bash
+steer workflow list
+```
+
+This prints each workflow name with its `@description`. It never errors on
+a bad/empty directory, so an empty list means there are no workflows here.
+
+Match the user's request against those descriptions, then confirm the choice
+with **AskUserQuestion** — recommend the best fit (the user can always pick
+"Other" to name one you didn't suggest).
 
 ## Steps
 
@@ -23,7 +39,9 @@ If either is unclear, ask the user with the AskUserQuestion tool.
    steer instance start <workflow> <name>
    ```
 
-   Output: `instance <name>: started`, followed by the workflow context description if `@context` was set in the workflow.
+   `<workflow>` may be a path or a bare workflow name (resolved under
+   `.steer/workflows/`). Output: `instance <name>: started`, followed by the
+   workflow context description if `@context` was set in the workflow.
 
 2. **Loop** until `step` returns `(complete)` or `(not running)`:
 

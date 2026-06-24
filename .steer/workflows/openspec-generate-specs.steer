@@ -1,0 +1,89 @@
+// openspec-generate-specs: generate/refresh OpenSpec main specs from existing code.
+// Run dossier: .openspec-generate-runs/<run>/ (NOT under openspec/ at the manifest root).
+// Trailing review<->refine closed loop: review extracts FUNCTIONAL UNITS (any-visibility functions,
+// trait methods, assembly routines, linker-script blocks) from EVERY file across all target repos;
+// refine adds/merges REQUIREMENTS into the unit's own repo to close the gap; loop until covered or budget exhausted.
+
+@template = "openspec-generate-specs"
+@context = "Generate/refresh OpenSpec main specs from existing code, docs, MRs, and full git history. Single-repo or multi-repo (repo manifest). Fully automatic: no mid-run ask points.\nSpecs follow code. In a `repo`-manifest checkout the project root is NOT a git repo -- NEVER write openspec/ to the manifest root. Each capability has ONE primary-owner repo (home of the end-to-end spec) plus its participating repos; EVERY participating repo gets its own `<cap>/spec.md` (same capability name, per-repo-local). The owner's spec carries the end-to-end/orchestration requirements; each participant's spec describes that repo's own side. Related specs (cross-repo participants OR same-repo other capabilities) are referenced INLINE in requirement descriptions as additive context. Cross-repo link: `[<cap> in <repo>](<repo>/openspec/specs/<cap>/spec.md)`; same-repo link: `[<cap>](openspec/specs/<cap>/spec.md)`. Validate via `cd <repo> && openspec validate ...` per repo.\nHard gates: `cd <repo> && openspec validate --specs` exits 0 in every repo that received a spec; when a repo had prior openspec/specs/, every existing capability + requirement/scenario/contract fact MUST be reproduced (per-repo coverage guard)."
+
+max_review_rounds = 3
+
+// 0. Confirm openspec CLI is installed.
+has_openspec = command("command -v openspec >/dev/null 2>&1 && echo yes || echo no", return="yes or no")
+if has_openspec != "yes"
+    print("STOP: the `openspec` CLI is required (for `openspec validate`) but is not installed. Install it and re-run this workflow.")
+    return
+end
+
+run = ask("What is the run name? This becomes the .openspec-generate-runs/<run>/ audit dossier for this generation run. Use kebab-case, e.g. refresh-sim-specs or bootstrap-v1.", return="run name in kebab-case")
+
+// 1. Detect environment and build target-repo inventory.
+detect_env("Detect the project environment and build the per-target-repo inventory for spec generation run {run}; record everything to env.md.",
+           produce=[".openspec-generate-runs/{run}/env.md"],
+           check="confirm .openspec-generate-runs/{run}/env.md records the repo topology and a per-target-repo inventory (path, existing capabilities as coverage floor, changes/archive/ presence, host CLI + project, CodeGraph availability) for EACH target repo")
+
+// 2a. Plan the deep-scan units.
+plan_scan("Partition the codebase into deep-scan units for spec generation run {run} and record them to scan-plan.md. Read .openspec-generate-runs/{run}/env.md FIRST for the target-repo inventory.",
+          produce=[".openspec-generate-runs/{run}/scan-plan.md"],
+          check="confirm .openspec-generate-runs/{run}/scan-plan.md partitions every source file across every target repo (from env.md) into deep-scan units with no gaps and no double-counting, each unit bounded by code semantics (not file count), and every cross-repo unit records its cross-repo seam")
+
+// 2b. Gather context: fan out one deep-mine subagent per scan unit, per the plan.
+gather("Gather project context for spec generation run {run} and synthesize it per candidate capability into the capabilities/ directory. Read .openspec-generate-runs/{run}/scan-plan.md FIRST (it holds the deep-scan units) and .openspec-generate-runs/{run}/env.md for per-repo branching.",
+       produce=[".openspec-generate-runs/{run}/capabilities/"],
+       check="confirm .openspec-generate-runs/{run}/capabilities/ holds one shard per repo (multi-repo) or per top-level module (single-repo), each listing candidate capabilities with participating-repos, contract facts partitioned BY repo, and the sources that evidenced them")
+
+// 3. Identify capabilities: primary-owner + participating repos (specs follow code).
+identify("Finalize the capability list AND assign each a primary-owner repo plus its participating repos for spec generation run {run}, then write the FINAL list to final-list.md. Read EVERY shard under .openspec-generate-runs/{run}/capabilities/ (the gathered context, sharded per repo/module) and merge them into one global view.",
+        produce=[".openspec-generate-runs/{run}/final-list.md"],
+        check="confirm .openspec-generate-runs/{run}/final-list.md holds the FINAL capability list, every name is kebab-case, every capability has a primary-owner repo AND a participating-repos list recorded, every prior existing capability (per env.md, per its repo) appears under the SAME name marked REUSE-existing in THAT repo (none renamed/merged/dropped), and each capability lists the concrete contract facts to pin PER participating repo")
+
+// 4. Generate all specs -- one <cap>/spec.md PER participating repo (specs follow code).
+generate_all("Generate the specs for ALL capabilities in run {run} -- write ONE `<cap>/spec.md` PER participating repo, validate each in place, and record every (capability, repo) to generation-log.md. Read .openspec-generate-runs/{run}/final-list.md FIRST for the FINAL list (each capability's primary-owner repo, participating repos, per-repo REUSE-vs-NEW, and per-repo contract facts).",
+             produce=[".openspec-generate-runs/{run}/generation-log.md"],
+             check="confirm .openspec-generate-runs/{run}/generation-log.md lists EVERY (capability, participating repo) pair from final-list.md, each with the spec path actually written under that repo's openspec/specs/ (NEVER the manifest root), an owner-or-participant flag, requirement + scenario counts, New/Merged status, and `cd <repo> && openspec validate <cap> --type spec` exit 0; and every written spec has a >= 50 char ## Purpose, SHALL/MUST in every requirement, and exactly-four-hashtag scenarios")
+
+// 5. Coverage guard -- per sub-repo where prior specs existed.
+had_prior_specs = collect("Read .openspec-generate-runs/{run}/env.md and its target-repo inventory. Did ANY target repo have an existing openspec/specs/ directory (the coverage floor) BEFORE this run -- i.e. is this a refresh (at least one sub-repo had prior specs), not a pure bootstrap? Return exactly one token: PRIOR (at least one target repo had prior specs -- run the per-sub-repo coverage guard) or BOOTSTRAP (no target repo had prior specs -- skip the coverage guard).",
+                          return="PRIOR or BOOTSTRAP",
+                          check="confirm the returned token is exactly PRIOR or BOOTSTRAP, derived from env.md's per-target-repo existing-openspec-artifacts inventory")
+if had_prior_specs == "PRIOR"
+    coverage_guard("Run the coverage guard for run {run}: per target repo that had prior specs (per env.md), confirm every existing capability + requirement/scenario/contract fact was reproduced (no silent regression), fix any gap in-place, and record the aggregate verdict to coverage.md. Fan out one subagent per such repo (parallel; serial within a repo).",
+                    produce=[".openspec-generate-runs/{run}/coverage.md"],
+                    check="confirm .openspec-generate-runs/{run}/coverage.md gained a `## Coverage guard` block stating, per target repo that had prior specs, every existing capability was reproduced under the same name in that repo, every existing requirement/scenario/contract fact is present (or any regression was fixed and re-validated via `cd <repo> && openspec validate`), and an aggregate net-new requirement count across all such repos")
+end
+
+// 6. review<->refine closed loop.
+//    steer constraints: (1) judge must be assigned to a var before testing;
+//    (2) loop...until is post-test, no break/continue -- refine is guarded inside;
+//    (3) validate's blind spot: custom callees use bare calls (produce= + check=), no assignment.
+round = 0
+covered = false
+loop
+    round = round + 1
+
+    review("Review round {round} for run {run}: go through every meaningful piece of behavior in the code -- every file's functional units (functions of any visibility, trait methods, assembly routines, linker-script blocks/symbols) across every target repo (per env.md) -- and for each, check whether a spec requirement genuinely describes it. PASS the covered ones (record them to the per-shard passed-units log so later rounds skip them); the ones with no covering requirement are the GAP. Fan out one subagent per module shard (multi-repo: per repo; single-repo: per top-level module): each reads its shard's passed-units log, skips units already recorded PASS, re-checks the rest, appends newly-passed units to its shard's log, and returns its shard's GAP list; the main agent merges the shard GAP lists into one `## Review round {round}` block in coverage.md. Read .openspec-generate-runs/{run}/env.md FIRST for the target-repo inventory; the coverage scope, the skip-vs-recheck rule, and the passed-units log structure are in the review template.",
+           produce=[".openspec-generate-runs/{run}/coverage.md", ".openspec-generate-runs/{run}/review.md", ".openspec-generate-runs/{run}/coverage-passed/"],
+           check="confirm .openspec-generate-runs/{run}/coverage.md gained a `## Review round {round}` block with a per-repo GAP list (the functional units, source + linker scripts + assembly, all visibilities, excluding only trivial units, that still have NO covering requirement), and .openspec-generate-runs/{run}/coverage-passed/ holds one shard per repo (multi-repo) or top-level module (single-repo), each listing the units recorded PASS this run with their file path + covering requirement (<cap>#<requirement-name>).")
+
+    covered = judge("Read .openspec-generate-runs/{run}/coverage.md's latest `## Review round {round}` block (covering all target repos). Is the GAP list EMPTY for EVERY target repo -- i.e. does every functional unit in every target repo now have a requirement that genuinely describes its behavior? Answer true only if every target repo's gap list is empty; false if any functional unit in any target repo still maps to NONE.")
+
+    if not covered
+        refine("Refine round {round} for run {run}: close the per-repo GAP list from .openspec-generate-runs/{run}/coverage.md's latest `## Review round {round}` block by adding/merging requirements (or creating a new capability) into each uncovered unit's OWN repo, then re-validate every touched spec in place and append a `## Refine round {round}` block to coverage.md. The ADD/MERGE strategy and new-capability trigger are in the refine template.",
+               produce=[".openspec-generate-runs/{run}/coverage.md"],
+               check="confirm .openspec-generate-runs/{run}/coverage.md gained a `## Refine round {round}` block, every touched spec re-validates with `cd <repo> && openspec validate <cap> --type spec` exit 0 (requirements written to the functional unit's own repo, never the manifest root), and every gap functional unit from the latest review round is now addressed by an added/merged requirement or a new capability spec")
+    end
+until covered or round >= max_review_rounds
+
+// 6b. Post-loop full validation -- the ONLY full `openspec validate --specs` in the run.
+//     generate_all validated each spec singly in place; refine may have edited/created specs.
+//     This is the one whole-repo pass that catches anything cross-spec, run after the loop settles.
+full_validate("Run the full structural validation for run {run}: for each target repo that received specs (per generation-log.md), run `cd <repo> && openspec validate --specs` and fix any ERROR until exit 0. Fan out one subagent per such repo (parallel -- each repo validates independently; serial within a repo since fixes touch that repo's own specs). This is the only whole-repo pass; the per-repo run and multi-repo cwd rule are in the full_validate template.",
+              check="confirm `cd <repo> && openspec validate --specs` exits with code 0 and emits no `[ERROR]` lines in EVERY target repo that received specs (per generation-log.md)")
+
+// 7. Summary.
+summary("Write the consolidated summary for spec generation run {run} -- the single handoff-ready artifact. Read the run dossier under .openspec-generate-runs/{run}/ (the summary template lists which files to pull from) and produce the per-(capability, repo) summary table plus the coverage-guard result and the review-loop outcome. The review-loop outcome is covered={covered}: covered=true means the last review round's GAP was already empty; covered=false means the last review had a GAP, refine ran after it but was not re-reviewed, so report the residual per-repo gap list (from the last review round) for the user to verify whether refine closed it.",
+        produce=[".openspec-generate-runs/{run}/summary.md"],
+        check="confirm .openspec-generate-runs/{run}/summary.md has the per-(capability, repo) table (Capability | Repo | Owner? | Requirements | Scenarios | Status) -- one row per participating repo, the Repo column MANDATORY -- the coverage-guard result line, and the review-loop outcome stating covered={covered} (and, when covered=false, the residual per-repo gap list from the last review round), and states specs were written to each repo's own openspec/specs/ never the manifest root")
+
+print("openspec-generate-specs run {run}: covered={covered} after {round} review round(s). Specs written to each repo's own openspec/specs/ (one <cap>/spec.md per participating repo, never the manifest root). See .openspec-generate-runs/{run}/summary.md for the full summary -- the per-(capability, repo) table, the coverage-guard result, and, when covered=false, the residual per-repo gap list to verify whether refine closed it.")
