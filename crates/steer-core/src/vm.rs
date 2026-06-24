@@ -234,12 +234,14 @@ pub fn check(ir: &[Instr], ctx: &mut Context, instance: &str) -> CheckOutcome {
             let checked = ctx.steps.get(&pc).and_then(|st| st.checked.clone());
             match checked {
                 Some(report) if report.passed() => {
-                    // Keep `checked` as-is so the verification result persists
-                    // in context.json as an audit trail. PC advancement
-                    // already prevents re-checking this step.
-                    if let Some(st) = ctx.steps.get_mut(&pc) {
-                        st.failure_reason = None;
-                    }
+                    // Consume the op's verification state. Inside a loop the
+                    // same `AgentOp` instruction is re-entered each iteration;
+                    // leaving a prior pass in place would let a later iteration
+                    // advance without a fresh report. Clearing here (rather than
+                    // relying on PC advancement) makes "a pass is reported once
+                    // and consumed once" hold uniformly, loop or not. The
+                    // failure path below keeps its report for retry.
+                    ctx.steps.remove(&pc);
                     ctx.pc += 1;
                     CheckOutcome::Advanced
                 }
@@ -492,6 +494,108 @@ mod tests {
         );
         check(&ir, &mut ctx, "<name>");
         assert_eq!(step(&ir, &mut ctx, "<name>"), StepOutcome::Complete);
+    }
+
+    #[test]
+    fn for_loop_check_requires_per_iteration_report() {
+        // A check-bearing task inside a for loop lowers to ONE AgentOp that each
+        // iteration re-enters. A pass reported for the first iteration must NOT
+        // satisfy the second iteration's check.
+        let ir = ir("for f in [\"a\", \"b\"]\n  task(\"fix {f}\", check=\"confirm {f}\")\nend\n");
+        let mut ctx = Context::new();
+        // iteration 1: "a"
+        assert!(
+            matches!(step(&ir, &mut ctx, "<name>"), StepOutcome::Instruction(s) if s.contains("fix a"))
+        );
+        // not reported yet -> verification instruction
+        assert!(matches!(
+            check(&ir, &mut ctx, "<name>"),
+            CheckOutcome::Instruction(_)
+        ));
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        // iteration 2: "b". The stale pass for "a" must be gone.
+        assert!(
+            matches!(step(&ir, &mut ctx, "<name>"), StepOutcome::Instruction(s) if s.contains("fix b"))
+        );
+        // Bug: this reads Advanced on the stale "a" pass. Expected: Instruction.
+        assert!(
+            matches!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Instruction(_)),
+            "second iteration must require a fresh report"
+        );
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        assert_eq!(step(&ir, &mut ctx, "<name>"), StepOutcome::Complete);
+    }
+
+    #[test]
+    fn loop_until_check_requires_per_iteration_report() {
+        // A check-bearing task inside loop...until re-enters the same AgentOp each
+        // iteration; a prior pass must not leak across the back-edge.
+        let ir = ir("i = 0\nloop\n  i = i + 1\n  task(\"step {i}\", check=\"ok\")\nuntil i >= 2\n");
+        let mut ctx = Context::new();
+        // iteration 1: "step 1"
+        assert!(
+            matches!(step(&ir, &mut ctx, "<name>"), StepOutcome::Instruction(s) if s.contains("step 1"))
+        );
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        // iteration 2: "step 2" — stale pass must be gone.
+        assert!(
+            matches!(step(&ir, &mut ctx, "<name>"), StepOutcome::Instruction(s) if s.contains("step 2"))
+        );
+        assert!(
+            matches!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Instruction(_)),
+            "second iteration must require a fresh report"
+        );
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        assert_eq!(step(&ir, &mut ctx, "<name>"), StepOutcome::Complete);
+    }
+
+    #[test]
+    fn passing_check_consumes_report_single_iteration() {
+        let ir = ir("task(\"do\", check=\"ok\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>");
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        // The report is consumed; the op is no longer pending any report.
+        assert!(ctx.steps.get(&0).is_none_or(|s| s.checked.is_none()));
+        // A second check on the now-advanced pc lands beyond the AgentOp.
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Done);
+    }
+
+    #[test]
+    fn failed_then_pass_within_iteration_consumes_report() {
+        let ir = ir("for f in [\"a\", \"b\"]\n  task(\"fix {f}\", check=\"confirm {f}\")\nend\n");
+        let mut ctx = Context::new();
+        // iteration 1: fail, then pass on retry within the same iteration.
+        assert!(matches!(
+            step(&ir, &mut ctx, "<name>"),
+            StepOutcome::Instruction(_)
+        ));
+        let failed = Value::Object(HashMap::from([
+            ("passed".to_string(), Value::Bool(false)),
+            ("reason".to_string(), Value::Str("nope".into())),
+        ]));
+        set_value(&mut ctx, "checked", failed).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Failed);
+        // retry step surfaces the failure reason
+        assert!(
+            matches!(step(&ir, &mut ctx, "<name>"), StepOutcome::Instruction(s) if s.contains("nope"))
+        );
+        set_value(&mut ctx, "checked", Value::Bool(true)).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+        // iteration 2: the consumed pass for iteration 1 must not leak.
+        assert!(matches!(
+            step(&ir, &mut ctx, "<name>"),
+            StepOutcome::Instruction(_)
+        ));
+        assert!(
+            matches!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Instruction(_)),
+            "second iteration must require a fresh report after a failed-then-pass"
+        );
     }
 
     #[test]

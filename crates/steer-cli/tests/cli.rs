@@ -155,6 +155,73 @@ fn instance_runs_end_to_end() {
 }
 
 #[test]
+fn instance_for_loop_check_requires_per_iteration_report() {
+    // Mirror .steer/workflows/demo.steer's two-file for loop: each iteration
+    // re-enters the same check-bearing task. Passing file1 must NOT let file2's
+    // check advance without a fresh report.
+    let tmp = std::env::temp_dir().join(format!("steer-cli-loop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("make tmp dir");
+    let wf = tmp.join("wf.steer");
+    std::fs::write(
+        &wf,
+        "for f in [\"file1\", \"file2\"]\n  task(\"fix {f}\", check=\"confirm {f} is fixed\")\nend\n",
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        steer()
+            .args(args)
+            .current_dir(&tmp)
+            .output()
+            .expect("run steer")
+    };
+
+    let out = run(&["instance", "start", "wf.steer", "it"]);
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // step -> "fix file1"
+    let out = run(&["instance", "step", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("fix file1"));
+
+    // check -> verification instruction (not yet reported)
+    let out = run(&["instance", "check", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("confirm file1 is fixed"));
+
+    // agent reports pass for file1
+    let out = run(&["instance", "set", "it", "checked", "{\"passed\":true}"]);
+    assert!(out.status.success());
+    let out = run(&["instance", "check", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("advanced"));
+
+    // step -> "fix file2"
+    let out = run(&["instance", "step", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("fix file2"));
+
+    // Bug: file2's check would read file1's stale pass and advance. Expected:
+    // the verification instruction, demanding a fresh report for file2.
+    let out = run(&["instance", "check", "it"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        stdout.contains("confirm file2 is fixed") && !stdout.contains("advanced"),
+        "file2 must require a fresh report, got: {stdout}"
+    );
+
+    // now report file2 and complete
+    run(&["instance", "set", "it", "checked", "{\"passed\":true}"]);
+    let out = run(&["instance", "check", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("advanced"));
+    let out = run(&["instance", "step", "it"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("complete"));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn instance_start_rejects_invalid_workflow() {
     let tmp = std::env::temp_dir().join(format!("steer-cli-it2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
