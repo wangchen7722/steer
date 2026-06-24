@@ -1,0 +1,134 @@
+// Workflow: openspec-archive
+// Final phase of the OpenSpec + Superpowers spec-driven workflow: archive a
+// completed change. Mirrors the openspec-archive-change skill.
+//
+// Steps: select the change -> verify artifact + task completion -> assess delta
+// spec sync (optional) -> move the change directory into the archive -> summary.
+// Requires the openspec CLI throughout, and the openspec-sync-specs skill only
+// when the user chooses to sync delta specs. Uses the default template set:
+// standard ask/command/judge/collect/task/print nodes.
+
+@template = "default"
+@context = "OpenSpec archive phase: select a completed change, confirm artifacts and tasks are done, optionally sync delta specs to main specs, then move the change into the archive."
+@description = "Archive a completed openspec change: confirm completion, optionally sync specs, move to archive."
+
+// Gate: the openspec CLI must be available; this workflow shells out to it
+// throughout. Halt before any work if it is missing.
+has_openspec = judge("Is the `openspec` CLI available on PATH? Answer true only if `openspec --version` (or `which openspec`) succeeds; false otherwise.")
+if not has_openspec
+    print("STOP: the `openspec` CLI is required but is not on PATH. Install it and re-run this workflow.")
+    return
+end
+
+// Step 1: select the change. Run `openspec list --json`, show only active
+// (non-archived) changes with their schema, and let the user choose. Never
+// auto-select; the value must come from the human.
+change = ask("Run `openspec list --json`. Parse the output and present ONLY active (non-archived) changes via AskUserQuestion, each labeled with its schema name if present. If a change is already obvious from the conversation, include it as the suggested option but still let the user confirm or pick another.",
+             return="the selected change name in kebab-case",
+             check="Confirm the reported change name matches one of the active (non-archived) changes returned by `openspec list --json`")
+
+// Capture the status JSON once; every later decision and path is derived from it.
+status_json = command("openspec status --change \"{change}\" --json",
+                      return="the full raw openspec status JSON output")
+
+// Step 2a: workspace-planning mode is not archivable in this slice. Hard gate.
+is_workspace = judge("Inspect this openspec status JSON: {status_json}. Is actionContext.mode exactly equal to \"workspace-planning\"? Answer true only if actionContext.mode is exactly the string workspace-planning; false otherwise.")
+if is_workspace
+    print("STOP: change {change} is in workspace-planning mode, which is not supported for archive. Workspace changes cannot be moved into a repo-local archive or edit linked repos.")
+    return
+end
+
+// Extract the paths and schema derived from the status JSON up front, so later
+// steps interpolate concrete values instead of re-parsing the JSON.
+change_root = collect("From this openspec status JSON: {status_json}, report the exact value of changeRoot.",
+                      return="the changeRoot directory path",
+                      check="Confirm the reported value is the changeRoot field taken verbatim from the JSON, not invented")
+changes_dir = collect("From this openspec status JSON: {status_json}, report the exact value of planningHome.changesDir.",
+                      return="the planningHome.changesDir directory path",
+                      check="Confirm the reported value is the planningHome.changesDir field taken verbatim from the JSON")
+schema = collect("From this openspec status JSON: {status_json}, report the exact value of schemaName.",
+                 return="the schemaName string",
+                 check="Confirm the reported value is the schemaName field taken verbatim from the JSON")
+
+// Track whether the user proceeded despite warnings, for the final summary note.
+proceeded_artifacts = false
+proceeded_tasks = false
+
+// Step 2b: artifact completion. Warn + confirm if any artifact is not done.
+artifacts_done = judge("Inspect this openspec status JSON: {status_json}. Look at the artifacts list. Is EVERY artifact marked with status \"done\"? Answer true only if every artifact's status is done (true even if the list is empty); false if any artifact has a status other than done.")
+if not artifacts_done
+    proceed_artifacts = ask("WARNING: some artifacts for change {change} are not marked done. Proceed with archiving anyway?",
+                            return="one of: yes, no")
+    if proceed_artifacts != "yes"
+        print("Archive cancelled by user: incomplete artifacts for change {change}.")
+        return
+    end
+    proceeded_artifacts = true
+end
+
+// Step 3: task completion. Count incomplete checkboxes in tasks.md. Proceed
+// without warning if the tasks file does not exist.
+has_tasks = command("test -f \"{change_root}/tasks.md\" && echo yes || echo no",
+                    return="yes or no")
+if has_tasks == "yes"
+    tasks_incomplete = judge("Read the file at \"{change_root}/tasks.md\". Does it contain any incomplete `- [ ]` checkbox? Answer true if at least one `- [ ]` remains; false if every checkbox is `- [x]` or there are no checkboxes.")
+    if tasks_incomplete
+        proceed_tasks = ask("WARNING: \"{change_root}/tasks.md\" still has incomplete `- [ ]` tasks. Proceed with archiving anyway?",
+                            return="one of: yes, no")
+        if proceed_tasks != "yes"
+            print("Archive cancelled by user: incomplete tasks in {change_root}/tasks.md.")
+            return
+        end
+        proceeded_tasks = true
+    end
+end
+
+// Step 4: delta spec sync assessment. Only prompt if delta specs exist.
+has_delta = judge("Inspect this openspec status JSON: {status_json}. Is artifactPaths.specs.existingOutputPaths a non-empty list (at least one delta spec path)? Answer true only if it contains one or more paths; false if it is empty or absent.")
+specs_line = "No delta specs"
+if has_delta
+    delta_summary = collect("Using this openspec status JSON: {status_json}, take each path in artifactPaths.specs.existingOutputPaths and compare it with its corresponding main spec at openspec/specs/<capability>/spec.md. Summarize the changes that syncing would apply, grouped as additions, modifications, removals, and renames.",
+                            return="a concise combined summary of the changes sync would apply",
+                            check="Confirm the summary references each delta spec and labels each change as add, modify, remove, or rename")
+    sync_choice = ask("Delta specs exist for change {change}. Sync summary:\n{delta_summary}\n\nSync the delta specs into the main specs before archiving, or archive without syncing?",
+                      return="one of: sync-now, archive-without-sync")
+    if sync_choice == "sync-now"
+        // Gate: openspec-sync-specs must be available to perform the sync.
+        has_sync_skill = judge("Is `openspec-sync-specs` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+        if not has_sync_skill
+            print("WARNING: `openspec-sync-specs` is required to sync but is not in your skills list. Skipping sync and proceeding to archive.")
+            specs_line = "Sync skipped (openspec-sync-specs not installed)"
+        else
+            task("Dispatch a general-purpose subagent (subagent_type: general-purpose). Instruct it to use the Skill tool to invoke openspec-sync-specs for change \"{change}\", passing this delta spec analysis:\n{delta_summary}\nDo not perform the sync yourself; the subagent owns it. Wait for the subagent to finish and report whether the delta specs were synced into openspec/specs/.",
+                 check="Confirm the subagent reported the delta specs were synced into openspec/specs/ and openspec/specs/ now reflects change {change}")
+            specs_line = "Synced to main specs"
+        end
+    else
+        specs_line = "Sync skipped (archived without syncing)"
+    end
+end
+
+// Step 5: perform the archive. Concrete paths are already extracted; just check
+// for a target-name collision, then mkdir + mv. The .openspec.yaml moves with
+// the directory, so nothing extra is needed for it.
+today = command("date +%F", return="today's date as YYYY-MM-DD")
+archive_path = task("Create the archive directory if needed: run `mkdir -p \"{changes_dir}/archive\"`. The archive target name is \"{today}-{change}\". If \"{changes_dir}/archive/{today}-{change}\" already exists, STOP and report the collision (do not overwrite or move anything). Otherwise move the change directory: `mv \"{change_root}\" \"{changes_dir}/archive/{today}-{change}\"`. Report the final archive directory path.",
+                    return="the full path of the archive directory",
+                    check="Confirm \"{changes_dir}/archive/{today}-{change}\" exists and contains the moved contents (including .openspec.yaml if present), and \"{change_root}\" no longer exists")
+
+// Step 6: summary, including a note about any warnings the user proceeded past.
+if not proceeded_artifacts and not proceeded_tasks
+    warning_note = "All artifacts complete. All tasks complete."
+else
+    if proceeded_artifacts
+        if proceeded_tasks
+            warning_note = "Note: archived despite incomplete artifacts AND incomplete tasks."
+        else
+            warning_note = "Note: archived despite incomplete artifacts."
+        end
+    else
+        warning_note = "Note: archived despite incomplete tasks."
+    end
+end
+
+print("## Archive Complete\n\n**Change:** {change}\n**Schema:** {schema}\n**Archived to:** {archive_path}\n**Specs:** {specs_line}\n\n{warning_note}")
