@@ -257,7 +257,12 @@ fn run_instance_check(name: &str) -> ExitCode {
 
 fn run_instance_set(name: &str, var: &str, value: &str) -> ExitCode {
     let parsed = steer_core::parse_value(value);
-    with_instance_result(name, |_ir, ctx, _| {
+    with_instance_result(name, |ir, ctx, _| {
+        // Enforce the current op's declared `return` type at set time: if `var`
+        // is the assignment target of the op at `ctx.pc`, the value must match
+        // the callee's declared type. A mismatch is rejected before storing, so
+        // a wrong-typed value can never reach a downstream condition.
+        steer_core::validate_set_value(ir, ctx, var, &parsed)?;
         steer_core::set_value(ctx, var, parsed)?;
         Ok("ok".to_string())
     })

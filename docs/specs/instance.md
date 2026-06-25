@@ -15,11 +15,13 @@
 ## Scenario: set writes typed values
 - **WHEN** the user runs `steer instance set <name> <var> <value>`
 - **THEN** JSON literals are parsed as typed values, and bare strings remain
-  strings. `set` performs no return-type validation itself; a wrong-typed value
-  is stored as parsed and rejected later by `check` against the callee's
-  declared `return` type. The special `checked` variable keeps its own
-  structural validation (`true`/`false` or `{"passed":bool,"reason":"..."}`)
-  and is unaffected by return-type enforcement.
+  strings. When `<var>` is the current op's assignment target, `set` enforces
+  the callee's declared `return` type: a wrong-typed value is rejected with a
+  reason and is not stored. When `<var>` is not the current op's target, `set`
+  accepts the parsed value without type checking. The special `checked`
+  variable keeps its own structural validation (`true`/`false` or
+  `{"passed":bool,"reason":"..."}`) and is unaffected by return-type
+  enforcement.
 
 ## Scenario: error halts and status reports state
 - **WHEN** the user runs `steer instance error <name> <reason>` then `status`

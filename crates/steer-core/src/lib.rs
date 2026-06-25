@@ -49,4 +49,4 @@ pub use template::{
 };
 pub use validate::{validate, Diagnostic, Severity};
 pub use value::{eval, eval_literal, parse_value, EvalError, Value};
-pub use vm::{check, report_error, set_value, step, CheckOutcome, StepOutcome};
+pub use vm::{check, report_error, set_value, step, validate_set_value, CheckOutcome, StepOutcome};

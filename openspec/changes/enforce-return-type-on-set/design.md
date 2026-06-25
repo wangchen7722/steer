@@ -38,20 +38,24 @@ explicitly out of scope.
 ## Goals / Non-Goals
 
 **Goals:**
-- At `check` time for value ops, reject a value whose `Value` variant does not
-  match the callee's declared `return` `ParamKind`, and drive a retry instead
-  of advancing.
+- At `set` time, reject a value whose `Value` variant does not match the
+  callee's declared `return` `ParamKind`, when the variable being set is the
+  current op's assignment target. The value is never stored on mismatch.
 - Cover `IntrinsicBool`/`Bool` (must be `Value::Bool`) and `String` (must be
   `Value::Str`).
-- Reuse the existing failure-reason + retry machinery so the agent gets a
-  precise reason to correct itself — directly addressing the
-  context-compression "forgot the command" failure mode.
-- Zero CLI surface change.
+- Reject with a precise, agent-facing reason so the agent can correct itself —
+  directly addressing the context-compression "forgot the command" failure
+  mode.
+- The `checked` (`check=`) path keeps its own structural validation and is
+  unaffected.
 
 **Non-Goals:**
-- Hardening `set_value` itself (set time). Enforcement is at `check` time,
-  where the callee's `return` type is correlatable and a retry is drivable.
-  A wrong value stays stored until `check` rejects it.
+- Enforcing at `check` time. An earlier version of this change enforced at
+  `check`, but a value op has no `check=` gate forcing the agent to call
+  `check` — the agent can `set` and then `step` past the op without ever
+  checking, so a `check`-time gate is bypassable. `set` time is the single,
+  unbypassable enforcement point. (`check`'s value-op branch stays pure
+  key-presence, as before.)
 - Touching the `checked` (`check=`) path or its backward-compatible
   `true`/`false`/`{passed,reason}` acceptance.
 - Introducing a `return: json` / `return: object` type. Structured-data
@@ -59,44 +63,60 @@ explicitly out of scope.
   says so explicitly. A future change can add such a type if needed.
 - Type-checking `None`, bare (unassigned) calls, or callees with no `return`
   spec — no declared type to enforce.
+- Type-checking `set` of variables that are NOT the current op's target (a
+  workflow-assigned local, an already-completed op's variable). Those have no
+  active callee return type to check against.
 
 ## Decisions
 
-### Decision 1: Enforce at `check` time, not `set` time
+### Decision 1: Enforce at `set` time, not `check` time
 
-**Choice:** Type enforcement lives in `check`'s `CheckKind::Value` branch.
+**Choice:** Type enforcement lives in `validate_set_value`, called from the
+CLI's `run_instance_set` before `set_value` stores anything. It uses
+`ir[ctx.pc]` (the current op) to find the callee and its declared `return`
+type, and only enforces when the variable being set equals the op's `into`.
 
-**Rationale:** `set_value` is a low-level primitive called from `steer
-instance set` with no knowledge of which callee the variable belongs to — the
-callee is an IR/VM concept known only to the op at `ctx.pc`. `check` already
-holds `Instr::AgentOp { call, into }` and resolves the callee's template, so
-it is the natural and only place that can correlate value ↔ declared type.
-Enforcing at `check` time also lets the engine *retry* (return `Failed` +
-reason), which a `set`-time rejection could not do cleanly (there is no op
-context to attach a retry reason to).
+**Rationale:** The agent's interaction with a value op is `step` → `set` →
+(possibly) `check`/`step`. A value op has no `check=` clause, so nothing
+forces the agent to call `check` before advancing — the agent can `set` a
+wrong value and then `step` past the op, never hitting a `check`-time gate.
+Enforcing at `set` time is the only unbypassable point: every value an agent
+commits passes through `steer instance set`. It also keeps a wrong value from
+ever being stored, so no downstream `until`/`if` can see it. The CLI's
+`with_instance_result` closure already receives `(ir, ctx, name)`, so
+`ir[ctx.pc]` is available without threading new state.
 
-**Alternative considered:** Harden `set_value` to take a declared type.
-Rejected: `set` is called by the CLI with just `(name, var, value)`; threading
-the callee's `return` type down to it would require the CLI to look up the
-current op, duplicating VM state in the CLI and breaking the "VM is the only
-state authority" invariant. It also couldn't drive a retry.
+**Alternative considered:** Enforce at `check` time (in `CheckKind::Value`).
+Rejected after the user reproduced the bypass: `bug_slug = ask(...,
+return="bug slug in kebab-case")` followed by `set ... bug_slug false` and a
+direct `step` skipped `check` entirely. A `check`-time gate only works for
+the `check=` path, which already has its own `checked` validation.
 
-### Decision 2: Reject via `CheckOutcome::Failed` + failure-reason, mirroring the `checked` path
+**Alternative considered:** Harden the core `set_value` primitive itself.
+Rejected: `set_value(ctx, var, value)` has no IR and no notion of a current
+op; making it type-aware would force every caller (including internal
+`Assign`) to supply callee context it doesn't have. Keeping the policy in a
+dedicated `validate_set_value(ir, ctx, var, value)` that the CLI calls before
+`set_value` preserves the primitive's simplicity.
 
-**Choice:** A type mismatch returns `CheckOutcome::Failed` and stores a
-`failure_reason` on the step (via the same `ctx.steps.entry(pc)` path used by
-the `checked` failure case), incrementing `retry_count`. The next `step`
-appends the reason through the existing `append_retry_context`.
+### Decision 2: Reject via `Err(reason)` from `set`, printed to the agent
 
-**Rationale:** This is the exact mechanism already used for `check=` failures
-(vm.rs `CheckKind::Checked` failure branch). Reusing it means: zero new
-outcome variants, the CLI needs no change (`Failed` → `"failed"` already), and
-the agent-facing retry loop is identical. The failure reason text is the
-agent's signal to re-issue the correct `set`.
+**Choice:** `validate_set_value` returns `Err(reason)` on a type mismatch.
+`run_instance_set` propagates it through `with_instance_result`, which prints
+`error: <reason>` to stderr and exits non-zero, **without storing the value**.
+The agent sees the reason on its `steer instance set` call and re-issues the
+correct one.
 
-**Alternative considered:** A new `CheckOutcome::TypeError`. Rejected — it
-would be observably identical to `Failed` from the CLI/agent side and just
-adds a variant to maintain.
+**Rationale:** `set` is the agent's single commit point for a value; rejecting
+there with a precise reason is the most direct signal. No new VM outcome
+variant, no retry-state machinery, and the wrong value never reaches
+`ctx.vars`. The `check=` path keeps its own `CheckOutcome::Failed` + retry
+flow unchanged.
+
+**Alternative considered:** Reject at `check` via `CheckOutcome::Failed` +
+`failure_reason` + `retry_count` (the `checked`-path mechanism). Rejected: it
+is bypassable when the agent skips `check` (see Decision 1), and it lets the
+wrong value sit in `ctx.vars` between `set` and `check`.
 
 **Alternative considered:** `Status::Halted`. Rejected — too destructive for a
 recoverable agent mistake; wastes the tokens already spent on the run.
@@ -107,12 +127,11 @@ recoverable agent mistake; wastes the tokens already spent on the run.
 
 | `return` `ParamKind` | Accepted `Value` variant | On mismatch |
 |---|---|---|
-| `IntrinsicBool`, `Bool` | `Value::Bool` | `Failed` + reason |
-| `String` | `Value::Str` | `Failed` + reason |
-| `None` / no `return` spec / bare call | (unchecked) | existing behavior |
+| `IntrinsicBool`, `Bool` | `Value::Bool` | rejected at `set` with reason |
+| `String` | `Value::Str` | rejected at `set` with reason |
+| `None` / no `return` spec / bare call | (unchecked) | accepted (no declared type) |
 
-`None` and bare calls have no declared type, so no enforcement applies — they
-keep the current key-presence / `Auto` semantics.
+`None` and bare calls have no declared type, so no enforcement applies.
 
 **Rationale:** `IntrinsicBool` is the live bug (`judge`); `String` is the
 common case (`task`/`collect`/`ask`/`command`). `None` (`print`) and bare
@@ -122,11 +141,13 @@ type-check. The matrix is exhaustive over the declared-type space.
 ### Decision 4: Reason strings are specific per kind
 
 **Choice:**
-- Bool mismatch: `expected a boolean (true/false), got <kind>`
-- String mismatch: `expected a string, got an object — if you meant to report
-  structured data, that's not supported by return:string`
+- Bool mismatch: `expected a boolean (true/false) for \`<callee>\`, got <kind>`
+- String mismatch: `expected a string for \`<callee>\`, got <kind> — if you
+  meant to report structured data, that's not supported by return:string`
 
-where `<kind>` names the actual variant (object / list / number / string).
+where `<kind>` names the actual variant (object / boolean / number / list /
+string). Both string-mismatch cases (object or any other non-string variant)
+carry the `return:string` guidance.
 
 **Rationale:** A precise reason is the whole point — the agent forgot the
 command; the reason must tell it exactly what to set. The String reason
@@ -146,47 +167,48 @@ for workflows that rely on bare custom callees.
 
 ## Risks / Trade-offs
 
-- **[Risk] `return: string` workflows that today store JSON objects will start
-  failing `check`.**
+- **[Risk] `return: string` workflows that today store JSON objects via `set`
+  will start being rejected.**
   → Mitigation: This was always an unsupported use (the value was stored but
   never a real string); the rejection reason guides the author. The
   `openspec-generate-specs` workflow uses `return: string` only for genuine
   string results (`collect`'s `PRIOR`/`BOOTSTRAP`), so the blast radius is
   small. Audit existing `return="..."` assignments before merge.
 
-- **[Risk] Extra retry round costs tokens on a type mismatch.**
+- **[Risk] A rejected `set` costs the agent a corrective retry.**
   → Mitigation: This is the intended behavior — a silent wrong result costs
-  more (masked gaps) than one corrective retry. The retry reason is precise,
-  so a single retry typically suffices.
+  more (masked gaps) than one corrective `set`. The reason is precise, so a
+  single retry typically suffices.
 
-- **[Risk] `retry_count` is currently unbounded.**
-  → Mitigation: Pre-existing condition (the `checked` path has the same
-  property). Not introduced by this change; if a bound is wanted it is a
-  separate change.
-
-- **[Trade-off] Enforcement is at `check` time, so a wrong value is briefly
-  stored in `ctx.vars`.**
-  → Accepted: between `set` and `check` the wrong value exists, but it cannot
-  affect control flow until `check` advances the op, and `check` is the gate
-  that consumes it. No `step` past the op happens without `check` succeeding.
+- **[Trade-off] Only the current op's target variable is type-checked at `set`.**
+  → Accepted: a `set` of any other variable (a workflow local, an
+  already-completed op's variable) has no active callee return type to check
+  against, so it is allowed. This is the correct scope — the type contract
+  belongs to the op currently awaiting a value.
 
 ## Migration Plan
 
-1. Implement the `CheckKind::Value` type check + reasons.
-2. Add unit tests for each matrix cell (bool-accept, bool-reject,
-  string-accept, string-reject, none-unchecked, bare-unchecked,
-  no-spec-unchecked).
-3. `grep` the repo's `.steer/workflows/` for `= <callee>(..., return=...)`
+1. Implement `validate_set_value` + `check_value_against_callee` and the
+  kind-specific reasons.
+2. Wire `run_instance_set` to call `validate_set_value` before `set_value`.
+4. Add unit tests for each matrix cell (bool-accept, bool-reject,
+  string-accept, string-reject-object, string-reject-non-string,
+  non-target-var-unchecked, bare-callee-unchecked).
+5. `grep` the repo's `.steer/workflows/` for `= <callee>(..., return=...)`
   assignments and confirm none rely on storing non-string JSON under
   `return: string`.
-4. Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+6. Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features -- -D warnings`, `cargo test --workspace --all-features`.
+7. End-to-end check: `steer instance start <wf> <name>`, `step` to a value op,
+  `set <name> <var> <wrong-type>` must fail with a reason and not store;
+  `set` with a correct type must succeed.
 
-**Rollback:** Revert the `CheckKind::Value` branch to key-presence-only; no
-data-format or persistence change is involved (the stored `Value`s are
-unchanged, only the `check` decision changes).
+**Rollback:** Remove the `validate_set_value` call from `run_instance_set`
+(and the helper if unused); `check`'s value-op branch is already unchanged
+from before this change, so there is nothing to revert there. No data-format
+or persistence change is involved.
 
 ## Open Questions
 
-- Should a `retry_count` cap eventually halt a run stuck on repeated type
-  mismatches? Out of scope here; tracked as a possible follow-up.
+- None. (An earlier open question about a `retry_count` cap no longer applies:
+  `set`-time rejection does not touch retry state.)

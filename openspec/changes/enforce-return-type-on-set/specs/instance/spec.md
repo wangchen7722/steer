@@ -3,26 +3,27 @@
 ### Requirement: set writes typed values
 
 When the user runs `steer instance set <name> <var> <value>`, JSON literals
-are parsed as typed values, and bare strings remain strings. `set` itself
-performs no return-type validation — a wrong-typed value is stored as parsed.
-The value's type is enforced later, at `check` time, against the callee's
-declared `return` `ParamKind`: a mismatch makes `check` return `Failed` with a
-reason (a recoverable retry condition), not a silent success. The special
-`checked` variable keeps its own structural validation (`true`/`false` or
-`{"passed":bool,"reason":"..."}`) and is unaffected.
+are parsed as typed values, and bare strings remain strings. When `<var>` is
+the current op's assignment target, `set` additionally enforces the callee's
+declared `return` `ParamKind`: a value whose type does not match is rejected
+with a reason and is **not stored**. When `<var>` is not the current op's
+target, `set` accepts the parsed value without type checking. The special
+`checked` variable keeps its own structural validation
+(`true`/`false` or `{"passed":bool,"reason":"..."}`) and is unaffected by
+return-type enforcement.
 
 #### Scenario: typed parsing is unchanged
 
-- **WHEN** the user runs `steer instance set <name> <var> <value>`
+- **WHEN** the user runs `steer instance set <name> <var> <value>` for a
+  variable that is not the current op's target
 - **THEN** JSON literals are parsed as typed values, and bare strings remain
-  strings.
+  strings, with no type checking.
 
-#### Scenario: a wrong-typed value is stored but later rejected at check
+#### Scenario: a wrong-typed value for the current op is rejected at set
 
-- **WHEN** the agent sets a variable to a value whose type does not match the
-  callee's declared `return` kind
-- **THEN** `set` accepts and stores it, but the subsequent `check` on that op
-  returns `Failed` with a reason instead of advancing.
+- **WHEN** the agent sets the current op's target variable to a value whose
+  type does not match the callee's declared `return` kind
+- **THEN** `set` exits non-zero with a reason and does not store the value.
 
 #### Scenario: checked variable keeps its structural validation
 
