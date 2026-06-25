@@ -22,7 +22,8 @@ instruction for the agent, and results flow back via `steer instance set`.
   calls with positional + named arguments, strings with `{var}` interpolation,
   arithmetic, comparison, and `and`/`or`/`not` logical operators.
 - **Authoring** (`steer-core` + CLI): `steer workflow validate` (syntax +
-  semantic checks) and `steer workflow simulate` (render every instruction).
+  semantic checks), `steer workflow simulate` (render every instruction), and
+  `steer workflow list` (enumerate workflows + their `@description`).
 - **Runtime** (`steer-core` + CLI): a flat IR, a stepping interpreter, a
   serialisable execution context, and `steer instance start/step/check/set/
   error/status` — the agent-driven loop, resumable across CLI calls via
@@ -95,7 +96,8 @@ steer workflow list [dir]         # list workflows + their @description (default
 steer instance start <wf> <name>  # create / reset an instance
 steer instance step <name>        # current instruction (no state change)
 steer instance check <name>       # advance past the current op
-steer instance set <name> <v> <val>   # report a value or `checked`
+steer instance set <name> <v> <val>   # report a value or `checked`; a value op's
+                                    #   return type is enforced (wrong type rejected)
 steer instance error <name> "<reason>"   # halt
 steer instance status <name>      # running / complete / halted
 ```
