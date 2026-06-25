@@ -13,3 +13,6 @@
 
 # Steer
 /.steer/instances/*
+
+# OpenSpec generate-runs audit dossiers (run state, not committed)
+/.openspec-generate-runs/*
