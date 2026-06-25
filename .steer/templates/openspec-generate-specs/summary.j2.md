@@ -34,14 +34,14 @@ Total: <!-- X --> capabilities, <!-- Y --> (capability, repo) spec files, <!-- Z
 
 ## Coverage guard
 
-<!-- Per repo: "repo R: all N existing capabilities and M existing requirements reproduced; K net-new requirements added." OR "No prior specs -- bootstrap." -->
+<!-- Per repo: "repo R: all N existing capabilities and M existing behavior requirements reproduced; K net-new behavior requirements added." OR "No prior specs -- bootstrap." -->
 
 ## Review<->refine loop
 
 - **Rounds run**: <!-- round -->
-- **Outcome**: <!-- COVERED -- the last review round's GAP was already empty: every FUNCTIONAL UNIT in every repo (any-visibility functions, trait methods, assembly routines, linker-script blocks/symbols; excluding only trivial no-transform units) is described by a requirement in its own repo. OR UNCOVERED -- the last review round still had a GAP; refine ran after it but was NOT re-reviewed to confirm, so the gap below (from the last review round) may or may not have been closed by refine -- the user should verify. -->
-- **Residual gap** (if uncovered): per repo, list each functional unit the LAST REVIEW round found without a covering requirement (refine may have since addressed some -- verify against the refine round blocks in coverage.md):
-  - `<!-- repo -->`: `<!-- unit -->` (`<!-- file path -->`)
+- **Outcome**: <!-- COVERED -- the last review round's GAP was already empty: every meaningful behavior contract discovered from scanned evidence in every repo (source, config, build, script, IDL, policy, manifest, linker/assembly, and protocol/standard evidence; excluding only trivial no-transform evidence) is described by a requirement in the behavior-owning repo. OR UNCOVERED -- the last review round still had behavior GAPs; refine ran after it but was NOT re-reviewed to confirm, so the gaps below (from the last review round) may or may not have been closed by refine -- the user should verify. -->
+- **Residual gap** (if uncovered): per repo, list each behavior contract the LAST REVIEW round found without a covering requirement, with evidence units for traceability (refine may have since addressed some -- verify against the refine round blocks in coverage.md):
+  - `<!-- repo -->`: `<!-- behavior contract -->` evidenced by `<!-- file path / symbol / artifact -->`
 
 ## Files
 
@@ -51,17 +51,17 @@ Final results:
 
 Audit dossier (intermediate artifacts, all under `.openspec-generate-runs/{run}/`):
 - `env.md` -- target-repo inventory: single-repo vs multi-repo, each repo's path, root status, and whether it had prior `openspec/specs/`.
-- `scan-plan.md` -- the deep-scan plan: which files/modules to scan per repo for functional units.
+- `scan-plan.md` -- the deep-scan plan: which files/modules/artifacts to scan per repo for behavior evidence.
 - `capabilities/` -- gathered context per capability, sharded per repo/module (the gather step's output).
-- `final-list.md` -- the FINAL capability list: each capability with its primary-owner repo, participating-repos list, per-repo REUSE-vs-NEW, and per-repo contract facts.
+- `final-list.md` -- the FINAL capability list: each capability with its primary-owner repo, participating-repos list, per-repo REUSE-vs-NEW, behavior contracts to preserve, and implementation evidence.
 - `generation-log.md` -- every (capability, repo) spec written this run, with its role, spec path, inline links emitted, requirement/scenario counts, New/Merged status, and per-(cap,repo) validate result.
 - `coverage.md` -- the coverage-guard block plus every `## Review round N` and `## Refine round N` block appended across the loop.
 - `review.md` -- copies of every review round block (same content as the review blocks in coverage.md).
-- `coverage-passed/` -- per-shard logs (one `<shard-slug>.md` per repo or top-level module) of functional units already recorded PASS, the skip-set for incremental rescans.
+- `coverage-passed/` -- per-shard logs (one `<shard-slug>.md` per repo or top-level module) of behavior/evidence pairs already recorded PASS, the skip-set for incremental rescans.
 </template>
 
 <rules>
 - LANGUAGE: English output.
 - The Repo column is MANDATORY -- it lets the user verify each repo's code got its own local spec and that nothing was written to the manifest root.
-- Be honest: report covered only when the dossier genuinely shows every functional unit is covered, and do not invent findings not present in the dossier files.
+- Be honest: report covered only when the dossier genuinely shows every meaningful behavior contract discovered from scanned evidence is covered, and do not invent findings not present in the dossier files.
 </rules>
