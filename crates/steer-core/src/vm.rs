@@ -12,7 +12,7 @@ use steer_syntax::ast::{Call, CallArg};
 
 use crate::context::{CheckedReport, Context, Frame, Status, WorkflowMeta};
 use crate::ir::Instr;
-use crate::template::render_call;
+use crate::template::{render_call, resolve_template_with_meta, ParamKind};
 use crate::value::{eval, EvalError, Value};
 
 /// Outcome of [`step`].
@@ -222,11 +222,21 @@ pub fn check(ir: &[Instr], ctx: &mut Context, instance: &str) -> CheckOutcome {
             CheckOutcome::Advanced
         }
         CheckKind::Value(target) => {
-            if ctx.vars.contains_key(&target) {
-                ctx.pc += 1;
-                CheckOutcome::Advanced
-            } else {
-                CheckOutcome::Pending
+            let Some(value) = ctx.vars.get(&target) else {
+                return CheckOutcome::Pending;
+            };
+            match check_return_type(call, value, &ctx.meta) {
+                Ok(()) => {
+                    ctx.pc += 1;
+                    CheckOutcome::Advanced
+                }
+                Err(reason) => {
+                    let pc = ctx.pc;
+                    let st = ctx.steps.entry(pc).or_default();
+                    st.failure_reason = Some(reason);
+                    st.retry_count += 1;
+                    CheckOutcome::Failed
+                }
             }
         }
         CheckKind::Checked => {
@@ -301,6 +311,59 @@ fn check_instruction(
         "{instruction}\n\n<steer-system-reminder>\n{}\n</steer-system-reminder>",
         crate::template::render_check_report(instance)
     ))
+}
+
+/// Verify the value an agent set for an assigned value op matches the callee's
+/// declared `return` type. Returns `Ok(())` when the type matches or when no
+/// type is declared to enforce (`None`, missing `return` spec); returns
+/// `Err(reason)` with a kind-specific, agent-facing reason on mismatch.
+///
+/// This is the engine's last line of defense against an agent that — e.g.
+/// after context compression — forgets the exact `steer instance set` command
+/// and stores a wrong-typed value (such as a JSON verdict object into a bool
+/// variable). Without it, a truthy non-bool value would silently pass the
+/// op and fool a downstream `until`/`if` condition.
+fn check_return_type(call: &Call, value: &Value, meta: &WorkflowMeta) -> Result<(), String> {
+    let kind = resolve_template_with_meta(&call.callee, meta)
+        .return_spec()
+        .map(|spec| spec.kind);
+    match kind {
+        Some(ParamKind::IntrinsicBool) | Some(ParamKind::Bool) => match value {
+            Value::Bool(_) => Ok(()),
+            other => Err(format!(
+                "expected a boolean (true/false) for `{}`, got {}",
+                call.callee,
+                value_kind_name(other)
+            )),
+        },
+        Some(ParamKind::String) => match value {
+            Value::Str(_) => Ok(()),
+            Value::Object(_) => Err(format!(
+                "expected a string for `{}`, got an object — if you meant to report structured data, that's not supported by return:string",
+                call.callee
+            )),
+            other => Err(format!(
+                "expected a string for `{}`, got {}",
+                call.callee,
+                value_kind_name(other)
+            )),
+        },
+        // `None`, a missing `return` spec, or any other kind: no declared
+        // type to enforce — keep the existing key-presence behavior.
+        _ => Ok(()),
+    }
+}
+
+/// A short human-readable name for a `Value` variant, for failure reasons.
+fn value_kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Int(_) | Value::Float(_) => "number",
+        Value::Str(_) => "string",
+        Value::List(_) => "list",
+        Value::Object(_) => "object",
+    }
 }
 
 fn append_retry_context(instruction: String, reason: &str, retry_count: u32) -> String {
@@ -407,6 +470,129 @@ mod tests {
         set_value(&mut ctx, "x", Value::Str("answer".into())).unwrap();
         assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
         assert_eq!(step(&ir, &mut ctx, "<name>"), StepOutcome::Complete);
+    }
+
+    // ---- return-type enforcement on value ops ----
+
+    #[test]
+    fn bool_return_accepts_boolean() {
+        let ir = ir("covered = judge(\"is it covered?\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at judge
+        for v in [Value::Bool(true), Value::Bool(false)] {
+            set_value(&mut ctx, "covered", v).unwrap();
+            assert_eq!(
+                check(&ir, &mut ctx, "<name>"),
+                CheckOutcome::Advanced,
+                "bool value should advance"
+            );
+            // rewind so the loop can check the next value
+            ctx.pc = 0;
+            ctx.vars.remove("covered");
+        }
+    }
+
+    #[test]
+    fn bool_return_rejects_non_boolean() {
+        // The reported bug: agent sets a JSON verdict object into `covered`
+        // instead of a bool. check must reject it rather than silently advance.
+        let ir = ir("covered = judge(\"is it covered?\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at judge
+        let verdict = Value::Object(HashMap::from([
+            ("verdict".to_string(), Value::Str("COVERED".into())),
+            ("prior_gap".to_string(), Value::Int(354)),
+        ]));
+        set_value(&mut ctx, "covered", verdict).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Failed);
+        assert_eq!(ctx.pc, 0, "PC must not advance on a type mismatch");
+        let reason = ctx
+            .steps
+            .get(&0)
+            .and_then(|s| s.failure_reason.as_deref())
+            .expect("failure reason stored");
+        assert!(reason.contains("boolean"), "reason: {reason}");
+        // A non-empty object is truthy; the whole point is that this must NOT
+        // be allowed to fool a downstream `until covered`.
+        assert!(ctx.vars.get("covered").unwrap().truthy());
+    }
+
+    #[test]
+    fn string_return_accepts_string() {
+        let ir = ir("x = ask(\"q\", return=\"str\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at ask
+        set_value(&mut ctx, "x", Value::Str("answer".into())).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+    }
+
+    #[test]
+    fn string_return_rejects_object() {
+        let ir = ir("x = ask(\"q\", return=\"str\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at ask
+        let obj = Value::Object(HashMap::from([(
+            "verdict".to_string(),
+            Value::Str("COVERED".into()),
+        )]));
+        set_value(&mut ctx, "x", obj).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Failed);
+        assert_eq!(ctx.pc, 0, "PC must not advance on a type mismatch");
+        let reason = ctx
+            .steps
+            .get(&0)
+            .and_then(|s| s.failure_reason.as_deref())
+            .expect("failure reason stored");
+        assert!(
+            reason.contains("string") && reason.contains("return:string"),
+            "reason: {reason}"
+        );
+    }
+
+    #[test]
+    fn unchecked_return_kinds_keep_key_presence_behavior() {
+        // `print` declares `return: none`; an assigned print is unusual but the
+        // engine must not enforce a type it did not declare. Use a bare custom
+        // callee (no return spec -> generic fallback, no return spec) assigned
+        // to a var: any value advances.
+        let ir = ir("x = mycaller(\"do\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at mycaller
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Pending);
+        // An object into an undeclared-return callee must NOT be rejected.
+        let obj = Value::Object(HashMap::from([("k".to_string(), Value::Str("v".into()))]));
+        set_value(&mut ctx, "x", obj).unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Advanced);
+    }
+
+    #[test]
+    fn type_failure_reason_surfaces_on_next_step() {
+        let ir = ir("covered = judge(\"is it covered?\")\n");
+        let mut ctx = Context::new();
+        step(&ir, &mut ctx, "<name>"); // pause at judge
+        set_value(
+            &mut ctx,
+            "covered",
+            Value::Object(HashMap::from([(
+                "verdict".to_string(),
+                Value::Str("COVERED".into()),
+            )])),
+        )
+        .unwrap();
+        assert_eq!(check(&ir, &mut ctx, "<name>"), CheckOutcome::Failed);
+        match step(&ir, &mut ctx, "<name>") {
+            StepOutcome::Instruction(s) => {
+                assert!(
+                    s.contains("Previous verification failed"),
+                    "missing retry header: {s}"
+                );
+                assert!(
+                    s.contains("boolean"),
+                    "retry text must carry the type reason: {s}"
+                );
+            }
+            o => panic!("unexpected {o:?}"),
+        }
     }
 
     #[test]

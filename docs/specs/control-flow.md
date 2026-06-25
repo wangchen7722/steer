@@ -17,6 +17,9 @@
 
 ## Scenario: judge and check are distinct mechanisms
 - **WHEN** the author needs a judgment result in a condition
-- **THEN** `judge("...")` returns a boolean into a variable.
+- **THEN** `judge("...")` returns a boolean into a variable, and `check`
+  enforces that boolean type: a non-boolean value (e.g. a JSON object) set by
+  the agent is rejected with a `Failed` reason so a downstream `until`/`if`
+  condition cannot be fooled by a truthy non-bool value.
 - **WHEN** the author needs verify-and-retry behavior
 - **THEN** `task("...", check="...")` uses the runtime checked flow.
