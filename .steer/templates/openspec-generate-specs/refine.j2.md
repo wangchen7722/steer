@@ -47,14 +47,15 @@ For each behavior gap from the latest review round:
 - `<!-- repo -->`: `cd <repo> && openspec validate <cap> --type spec` -> <!-- exit 0 / fixed ERROR then exit 0 -->
 - **All touched specs validate?**: <!-- YES / NO -->
 - **Anything written to the manifest root?**: <!-- NO (must always be NO in a multi-repo checkout) -->
+- **Any line numbers written into spec.md?**: <!-- NO (must always be NO; file/symbol TRACE only) -->
 </template>
 
 <rules>
 - LANGUAGE: Write all output in English. Code/identifiers follow existing project conventions.
 - Write each refinement into the behavior-owning repo's `openspec/specs/` (normally the repo whose code or contract-bearing artifact implements that side -- specs follow code as evidence). In a multi-repo checkout NEVER write to the manifest root (it is not a git repo; untracked, wiped by `repo sync`), and NEVER write a behavior's requirement into a different repo.
-- Requirement text MUST contain SHALL or MUST (no should/may). Every requirement MUST have at least one `#### Scenario:` block using EXACTLY four hashtags. Purpose >= 50 chars for any NEW capability spec.
+- Requirement text MUST contain SHALL or MUST (no should/may). Every requirement MUST have at least one `#### Scenario:` block using EXACTLY four hashtags. Purpose >= 50 chars for any NEW capability spec. Every new/edited scenario MUST end with a `- **TRACE**:` field at stable granularity (module / source file / function-symbol, coarsest sufficient) -- never a line number or `file:line` range. Scenario WHEN/THEN steps are black-box (externally observable event/consequence); private symbols go in the TRACE at most, never in the steps or the SHALL/MUST sentence; only contract-surface identifiers appear in steps.
 - One requirement may cover MULTIPLE evidence units sharing one behavior -- do not spec one requirement per unit. Group gaps by shared behavior.
-- Pin concrete identifiers, numeric values, timeouts, signatures, trait boundaries, state transitions, linker/asm section names, addresses, alignment, symbol names, vector offsets, build/config names, policy names, protocol IDs, and file paths only when they are part of the external contract or compatibility promise -- same standard as generate-all. Otherwise record them as evidence. "SHALL handle appropriately" is a defect.
+- Pin concrete identifiers, numeric values, timeouts, signatures, trait boundaries, state transitions, linker/asm section names, addresses, alignment, symbol names, vector offsets, build/config names, policy names, protocol IDs only when they are part of the external contract or compatibility promise -- same standard as generate-all. Otherwise record them as evidence (in the scenario TRACE, never in requirement prose). Line numbers and line ranges MUST NOT appear anywhere in spec text. "SHALL handle appropriately" is a defect.
 - Create a NEW capability only for a genuinely distinct mechanism with no existing capability. Low-level contract surfaces (linker-script layouts, assembly routines, device tree bindings, build-selected feature behavior, policy files, manifests, compatibility matrices, protocol tables) that no existing cap describes are legitimate triggers for a new capability -- do not leave them unspecced as "implementation details".
 - Reuse existing capability names; do not rename, merge, or drop one. Add NEW capabilities only for genuinely distinct mechanisms.
 - Re-validate every touched repo (`cd <repo> && openspec validate <cap> --type spec`) until exit 0. Do not claim closure for a spec that still fails validation.

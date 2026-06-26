@@ -12,11 +12,13 @@ steer is a workflow interpreter: it parses a `.steer` workflow into individual i
 You need two things; resolve either with **AskUserQuestion** if missing.
 
 - a **workflow** — a path to a `.steer` file (e.g. `./my.steer`) or a bare
-  name (e.g. `demo`, `os-bugfix`). `steer instance start` resolves a bare
+  name (e.g. `demo`, `openspec-propose`). `steer instance start` resolves a bare
   name under `.steer/workflows/` itself, so don't look for the file — only a
   path needs an existence check.
-- an **instance name** — a short label for this run (suggest a default
-  derived from the workflow name).
+- an **instance name** — a short label for this run. **Always confirm it with
+  `AskUserQuestion`**: suggest a kebab-case default derived from the workflow
+  name and the user's request, but let the user pick or override it. Do not
+  invent a name silently. 
 
 If the user didn't name a workflow, discover candidates:
 

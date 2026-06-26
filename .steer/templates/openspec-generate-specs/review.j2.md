@@ -50,7 +50,7 @@ Per-repo GAP lists, merged from every shard's subagent. (Passed behavior/evidenc
 
 #### GAP list (uncovered behavior contracts in this repo)
 
-- `<!-- behavior contract summary -->` -> NONE -- <!-- why no covering requirement: missing observable rule / boundary / error semantic / invariant / compatibility surface / ABI / protocol / policy / layout / lifecycle; cite evidence units such as function / trait method / asm routine / linker section / build config / Kconfig / device tree / script / IDL / policy / manifest with file path:line -->
+- `<!-- behavior contract summary -->` -> NONE -- <!-- why no covering requirement: missing observable rule / boundary / error semantic / invariant / compatibility surface / ABI / protocol / policy / layout / lifecycle; cite evidence units such as function / trait method / asm routine / linker section / build config / Kconfig / device tree / script / IDL / policy / manifest with file path:line -- NOTE: file:line is a DOSSIER pointer for this run's audit only; it MUST NOT be copied into spec.md, where the TRACE field uses module/file/function granularity and never a line number -->
 - <!-- "none -- every meaningful behavior contract discovered from this repo's evidence is covered by a requirement" if the gap is empty -->
 
 ### Aggregate verdict

@@ -1,0 +1,91 @@
+// deep-research: multi-round, fan-out web research with cross-validation and a cited report.
+// Run dossier: .deep-research-runs/<run>/ (log.md, sources.md, scope.md, report.md), where
+// <run> is a self-generated "<workflow-slug>-<timestamp>" name -- the caller does NOT preset
+// anything; the workflow is self-contained. The research question is collected by the workflow's
+// own ask (its first clarification).
+// Harness: per round, plan_queries fans out N parallel search subagents (different but
+// related keywords), each returns M results; process fetches, cross-validates (timeliness,
+// accuracy), dedups against the verified source pool, and logs the trail; judge asks whether
+// important facets remain uncovered; expand derives the next round's keywords from the most
+// relevant results to advance depth. Breadth + depth, >= 5 rounds by default.
+// steer constraints: (1) judge/ask must be assigned before testing;
+// (2) loop...until is post-test, no break/continue -- expand is guarded inside;
+// (3) validate's blind spot: custom callees use bare calls (produce= + check=), no assignment.
+
+@template = "deep-research"
+@context = "Deep research on a user question: fan out parallel web searches with different but related keywords, fetch and cross-validate sources (timeliness, accuracy), dedup against the verified pool, iterate at least 5 rounds balancing breadth and depth, then synthesize a cited report. The run dossier lives under .deep-research-runs/<run>/."
+
+// Tunables. N = search suggestions per round (breadth); M = results to collect per suggestion
+// (depth of harvest). Guidance only -- the agent adapts both to the question's needs.
+max_rounds = 6
+queries_per_round = "around 10"
+results_per_query = "around 20"
+
+// 0. Resolve inputs. The run dossier name is self-generated as <workflow-slug>-<timestamp>,
+//    decoupled from the steer instance name -- the caller does not preset it. The research
+//    question comes from the user via the ask below (the workflow's first clarification).
+run = command("echo deep-research-$(date +%Y%m%d-%H%M%S)", return="run name: deep-research- followed by a YYYYMMDD-HHMMSS timestamp")
+question = ask("What is the research question or topic to investigate? Provide as specific a statement as possible -- include scope, time frame, and any constraints. The more specific, the better the fan-out searches will be targeted.",
+               return="the research question, stated as specifically as possible")
+
+// 1. Interactive requirement refinement loop.
+//    Each iteration: refine the question into a sharpened research brief (scope.md) that
+//    carries 2-3 suggestions for deepening/extending, then ask the user to APPROVE (start
+//    the research) or pick a suggestion / give a clarification to fold back in. The model
+//    re-refines each round from the accumulated brief plus the latest feedback. Loop until
+//    APPROVE -- this is the only pause point; once approved, the research loop runs unattended.
+//    When the user invoked the workflow WITH a question, the first pass refines THAT question
+//    (this is the first clarification, not a from-scratch ask); when invoked bare, the ask
+//    above already collected it.
+approved = false
+feedback = ""
+loop
+    scope("Refine the research question into a sharpened brief for run {run}. Original question: {question}. The user's latest feedback to fold in (empty on the first pass): {feedback}. Read .deep-research-runs/{run}/scope.md if it already exists (the accumulated prior refinement) and merge the feedback into it; on the first pass, build the brief from the question alone. Write scope.md with: the refined research question, the facets to cover (breadth), a depth target per facet, constraints, a testable success criterion, AND a 'Suggestions for further refinement' section listing 2-3 concrete directions the user could pick to deepen or extend the research (each a specific angle, subtopic, comparison, or framing -- never a vague 'research more').",
+          produce=[".deep-research-runs/{run}/scope.md"],
+          check="confirm .deep-research-runs/{run}/scope.md holds a refined research question, distinct facets with depth targets, constraints, a testable success criterion, and 2-3 concrete suggestions for further refinement")
+
+    feedback = ask("Review the refined brief in .deep-research-runs/{run}/scope.md, including its 'Suggestions for further refinement'. To START the research now, answer APPROVE. To refine further, either name one of the suggestions to adopt or describe your own clarification/extension -- the workflow folds it back in and re-refines.",
+                   return="APPROVE to start, or a chosen suggestion / clarification to fold back in")
+
+    approved = judge("The user was asked to APPROVE the refined research brief or request further refinement. Their response was: {feedback}. Did the user APPROVE -- i.e. express intent to start the research now (e.g. APPROVE, yes, start, go ahead, looks good) -- rather than requesting a further change, adopting a suggestion, or offering a clarification? Answer true only if they want to proceed now; false if they asked for any refinement, extension, or clarification.")
+until approved
+
+// 2. Research loop: plan_queries -> search -> process -> judge -> (expand) -> next round.
+//    Post-test: at least one round always runs; expand only when not covered.
+round = 0
+covered = false
+loop
+    round = round + 1
+
+    // 2a. Plan this round's search suggestions.
+    plan_queries("Plan round {round} search suggestions for run {run}. Read .deep-research-runs/{run}/scope.md for the facets and .deep-research-runs/{run}/log.md for what prior rounds already covered (skip on round 1). Generate {queries_per_round} search suggestions -- different but related keywords/phrases -- that target the still-uncovered or under-covered facets for breadth, plus a few that go deeper on the highest-priority facet. Write them to log.md as a `## Round {round} -- planned queries` block.",
+                 produce=[".deep-research-runs/{run}/log.md"],
+                 check="confirm .deep-research-runs/{run}/log.md gained a `## Round {round} -- planned queries` block with {queries_per_round} distinct search suggestions targeting uncovered or under-covered facets, each phrased as a concrete web-search keyword/phrase")
+
+    // 2b. Fan out: dispatch parallel search subagents, one per planned query.
+    search("Run round {round} searches for run {run}. Read the `## Round {round} -- planned queries` block in .deep-research-runs/{run}/log.md. Fan out one web-search subagent PER planned query (parallel); each subagent searches the web with its keyword/phrase and collects {results_per_query} results (title, URL, snippet, publish date if visible). The main agent merges all subagents' results into sources.md as a `## Round {round} -- raw results` block -- one entry per result with its query origin. Do NOT fetch or verify yet; just harvest.",
+           produce=[".deep-research-runs/{run}/sources.md"],
+           check="confirm .deep-research-runs/{run}/sources.md gained a `## Round {round} -- raw results` block holding results from every planned query, each entry carrying title, URL, snippet, and query origin")
+
+    // 2c. Process: fetch, cross-validate, dedup, log the trail.
+    process("Process round {round} results for run {run}. Read the `## Round {round} -- raw results` block in .deep-research-runs/{run}/sources.md. For each result: fetch the page, extract the substance relevant to the scope facets, assess timeliness (is the publish/recency acceptable for the question?) and accuracy (does it come from a credible source? does the claim hold up?). Cross-validate key claims against at least one other source where possible; flag contradictions. Dedup against the existing verified pool in sources.md (drop near-duplicates, keep the most authoritative). Update sources.md: promote verified entries to a `## Verified sources` section with a verification status (VERIFIED / PARTIAL / CONFLICT / STALE / UNRELIABLE) and a one-line note; drop or annotate the rest. Append a `## Round {round} -- processing log` block to log.md recording what was fetched, verified, conflicted, deduped, and what facets it newly covered.",
+            produce=[".deep-research-runs/{run}/sources.md", ".deep-research-runs/{run}/log.md"],
+            check="confirm .deep-research-runs/{run}/sources.md has a `## Verified sources` section where each entry carries a verification status (VERIFIED/PARTIAL/CONFLICT/STALE/UNRELIABLE) and a one-line note, near-duplicates deduped, and .deep-research-runs/{run}/log.md gained a `## Round {round} -- processing log` block recording fetches, verifications, conflicts, dedups, and facets newly covered")
+
+    // 2d. Judge: are important facets still uncovered or under-covered?
+    covered = judge("Read .deep-research-runs/{run}/scope.md (the facets a thorough answer must cover) and .deep-research-runs/{run}/log.md (which facets prior rounds have covered with verified sources). Are ALL important facets now covered with verified, sufficient evidence -- nothing significant left under-covered? Answer true only if every important facet has adequate verified backing; false if any important facet is still uncovered, under-covered, or only backed by unverified/conflicting sources.")
+
+    // 2e. Expand: if not covered, derive next-round keywords from the most relevant results.
+    if not covered
+        expand("Expand for round {round} of run {run}. Read .deep-research-runs/{run}/log.md (covered facets + the round's processing log) and .deep-research-runs/{run}/sources.md (verified sources and the most relevant raw results). From the most relevant results found so far, derive follow-up search suggestions that go DEEPER on promising threads and BROADER on still-uncovered facets -- e.g. specific entities, named techniques, author/institution names, adjacent subtopics, or competing viewpoints surfaced. Write them to log.md as a `## Round {round} -- expansion seeds` block; these seeds are the input the NEXT round's plan_queries will consume.",
+               produce=[".deep-research-runs/{run}/log.md"],
+               check="confirm .deep-research-runs/{run}/log.md gained a `## Round {round} -- expansion seeds` block with follow-up search suggestions derived from the most relevant results, mixing depth (specific entities/techniques/authors) and breadth (adjacent/competing subtopics)")
+    end
+until covered or round >= max_rounds
+
+// 3. Synthesize the cited report.
+synthesize("Synthesize the final report for run {run} on the question: {question}. Read .deep-research-runs/{run}/scope.md (the facets to cover), .deep-research-runs/{run}/sources.md (the verified source pool with statuses and notes), and .deep-research-runs/{run}/log.md (the round-by-round trail). Write report.md: a structured answer organized by the scope facets, citing sources inline (author/title/URL, prefer VERIFIED sources), flagging where evidence is PARTIAL/CONFLICT/STALE, stating the limits of what the research could establish, and listing the verified sources used as a references section. The report is covered={covered}: covered=true means all important facets had adequate verified backing; covered=false means the loop hit the {max_rounds}-round cap with residual gaps -- in that case include an explicit 'Unresolved / under-covered' section listing the facets still lacking evidence.",
+           produce=[".deep-research-runs/{run}/report.md"],
+           check="confirm .deep-research-runs/{run}/report.md answers the question organized by scope facets, cites sources inline (preferring VERIFIED), flags PARTIAL/CONFLICT/STALE evidence, states the research limits, has a references section of verified sources, and (when covered=false) has an explicit 'Unresolved / under-covered' section")
+
+print("deep-research run {run}: covered={covered} after {round} round(s). Cited report in .deep-research-runs/{run}/report.md -- search/verification trail in log.md, verified source pool in sources.md.")

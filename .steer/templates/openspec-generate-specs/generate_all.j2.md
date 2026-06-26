@@ -12,7 +12,14 @@ This is the openspec-generate-specs workflow. Current position: **generate-all**
 
 SPECS FOLLOW CODE AS EVIDENCE. For EACH capability, iterate its participating repos and write one spec file per repo. FAN OUT, but NOT one subagent per (capability, repo) — a large repo yields hundreds or thousands of capabilities, and that many subagents is the wrong shape. Fan out by SHARD instead: one subagent per module shard (multi-repo: per repo; single-repo: per top-level module), and each subagent writes EVERY spec for the capabilities whose code or contract-bearing artifacts live in its shard, serially within the shard. The shard boundaries already exist — they are the capabilities/ shards from the gather step, and the per-repo grouping from env.md — so reuse them; do not re-invent a partition here. A shard's subagent writes each `<R>/openspec/specs/<cap>/spec.md` under its repo(s) and validates it in place; the one serialization rule is that two subagents must not edit the SAME spec file at once (only possible when both are MERGEs into one existing spec that straddles shards) — route such a file to one subagent. For EACH (capability, repo R):
 
-SPEC WRITING STANDARD: each `### Requirement:` describes one stable, verifiable behavior contract. Do NOT write requirements that merely narrate private code, e.g. "function A calls function B", local variables, helper order, or loop structure. Private/internal code MUST still be specified when it embodies stable behavior, such as standard/protocol parsing semantics, bit/field meanings, validation rules, ABI/protocol/policy/layout/lifecycle rules, state transitions, compatibility behavior, or externally observable errors.
+SPEC WRITING STANDARD: each `### Requirement:` AND every `#### Scenario:` under it describes one stable, verifiable behavior contract at the BLACK-BOX boundary. Do NOT write requirements or scenario steps that merely narrate private code, e.g. "function A calls function B", local variables, helper order, or loop structure. Private/internal code MUST still be specified when it embodies stable behavior, such as standard/protocol parsing semantics, bit/field meanings, validation rules, ABI/protocol/policy/layout/lifecycle rules, state transitions, compatibility behavior, or externally observable errors.
+
+SCENARIO LANGUAGE (applies to every WHEN/THEN/AND step): steps describe EXTERNALLY OBSERVABLE inputs and outcomes, never private field reads/writes. The observable-behavior baseline is the one gather already recorded: "Observable behavior: inputs, outputs, state changes, externally visible effects."
+- **WHEN** = an external event/input/condition the caller, peer, or system can observe (a request arrives, a resource is absent), named by its contract surface (message ID, error code) — NOT the internal variable that encodes it.
+- **THEN** = an externally observable consequence (a CID is allocated, an error surfaces, a state becomes visible to the caller) — NOT an internal field state.
+- A symbol may appear in a step ONLY when it is part of an external contract — i.e. changing it would break a cross-process / cross-compilation-unit / cross-version interface (message ID, error code, enum value, ABI signature, protocol field). 
+- **GIVEN** is used (not optional) whenever a precondition genuinely precedes the action; omit it only when there is no prior state.
+- **TRACE** = the implementation pointer that grounds the scenario in code, appended at the END of every scenario: a module/subsystem, source file, or function/symbol — coarsest sufficient to locate the behavior. This is where private symbols (private members, internal collections, helpers) and source paths live, since they are evidence, not contract wording. NEVER a line number or `file:line` range (a line number shifts when unrelated code is edited, so it is the one pointer a contract must not carry).
 
 Good requirement content:
 - When control flow returns to a check node for a new loop iteration, prior passed state MUST NOT be reused.
@@ -21,8 +28,15 @@ Good requirement content:
 Bad requirement content:
 - The VM calls `ctx.steps.insert(pc, StepState::default())` before incrementing `ctx.pc`.
 - `parse_expr` calls `parse_primary` and returns `Expr`.
+- A requirement sentence weaving private symbols into the SHALL/MUST action: "The component store SHALL be a singleton initialized under `static std::mutex lib_mutex_` ... fetching `getInstance()`." (`lib_mutex_` / `getInstance()` are private symbols — evidence, not contract wording.)
+- A scenario step naming a private field: `WHEN message.arg1_ = -1` / `THEN activated_cids is left unchanged` (private encoding, not the contract).
 
-Pin exact identifiers, values, paths, signatures, enum integers, section names, build rule names, config names, or file names ONLY when changing them would break an external contract or compatibility promise: public API, kernel/userspace ABI, Binder/AIDL/HIDL/HAL contract, protocol/wire format, persisted data format, media/Bluetooth/Wi-Fi/telephony/USB/PCIe/UFS/eMMC/NVMe obligation, permission/policy behavior, Android CDD/VTS/CTS compatibility behavior, device tree binding, Kconfig/BUILD.gn/Blueprint/Make/product-selected behavior, linker/assembly layout, boot/power/service lifecycle, or externally observable error semantics. Otherwise record them as implementation evidence, not as SHALL/MUST requirements.
+Good scenario content (the rejected-setup example above, black-box):
+- **WHEN** a data-call setup request is rejected
+- **THEN** no new CID is allocated to the caller
+- **AND** previously active CIDs remain unaffected
+
+Pin exact identifiers, values, signatures, enum integers, section names, build rule names, config names, or file names ONLY when changing them would break an external contract or compatibility promise: public API, kernel/userspace ABI, Binder/AIDL/HIDL/HAL contract, protocol/wire format, persisted data format, media/Bluetooth/Wi-Fi/telephony/USB/PCIe/UFS/eMMC/NVMe obligation, permission/policy behavior, Android CDD/VTS/CTS compatibility behavior, device tree binding, Kconfig/BUILD.gn/Blueprint/Make/product-selected behavior, linker/assembly layout, boot/power/service lifecycle, or externally observable error semantics. Otherwise record them as implementation evidence, not as SHALL/MUST requirements. Line numbers and line ranges MUST NOT appear anywhere in spec text — a line number shifts when unrelated code elsewhere in the file is edited, so it is the one pointer a contract must not carry. Source file paths and symbol names ARE permitted, but only as a scenario TRACE pointer (see the spec template below), never scattered through requirement prose.
 
 **A. Write/merge the spec** at `<R>/openspec/specs/<cap>/spec.md` (in a single-repo project `<R>` is the project root; in a multi-repo checkout it is the participating sub-repo. NEVER write to the manifest root):
 - If R is the **primary-owner**: the spec carries the end-to-end/orchestration requirements (the cross-repo story, state machine, contract) PLUS R's own local-side requirements.
@@ -53,16 +67,19 @@ The OpenSpec main-spec file you write for EACH (capability, repo) follows this s
 
 ### Requirement: <!-- Requirement Name -->
 
-<!-- The system SHALL/MUST <stable behavior contract>. ONE concern per requirement. This requirement describes observable behavior, boundaries, error semantics, invariants, compatibility surfaces, ABI/protocol/policy/layout/lifecycle rules, state transitions, standard/protocol parsing semantics, or bit/field meanings for THIS repo's side. Implementation units (functions of any visibility, trait methods, assembly routines, linker/build/config/script/IDL/policy/manifest artifacts) are evidence, not the default requirement boundary. Pin concrete identifiers, numeric values, timeouts, enum integers, return/error codes, exact signatures, section names, config names, bit offsets, field masks, or file names when they are part of the external contract or compatibility promise. Cite supporting evidence as "Evidenced by <paths/symbols/tests/history>" without turning private implementation steps into SHALL/MUST text. Where a related spec clarifies this requirement, reference it INLINE here as context: a cross-repo participant `[<cap> in <repo>](<repo>/openspec/specs/<cap>/spec.md)` or a same-repo capability `[<cap>](openspec/specs/<cap>/spec.md)`. -->
+<!-- The system SHALL/MUST <stable behavior contract>. ONE concern per requirement. This requirement describes observable behavior, boundaries, error semantics, invariants, compatibility surfaces, ABI/protocol/policy/layout/lifecycle rules, state transitions, standard/protocol parsing semantics, or bit/field meanings for THIS repo's side. Implementation units (functions of any visibility, trait methods, assembly routines, linker/build/config/script/IDL/policy/manifest artifacts) are evidence, not the default requirement boundary. Pin contract-surface identifiers (message IDs, error codes, enum integers, timeouts, return/error codes, exact ABI signatures, section names, config names, bit offsets, field masks) when they ARE the external contract or compatibility promise. Do NOT cite source file paths or line numbers in this prose, and do NOT weave private symbols (private members, internal collections, helpers) into the SHALL/MUST sentence — traceability for both goes in each scenario's TRACE field below. Where a related spec clarifies this requirement, reference it INLINE here as context: a cross-repo participant `[<cap> in <repo>](<repo>/openspec/specs/<cap>/spec.md)` or a same-repo capability `[<cap>](openspec/specs/<cap>/spec.md)`. -->
 
 #### Scenario: <Scenario Name>
-- **WHEN** <action or condition>
-- **THEN** <expected outcome>
-- **AND** <additional outcome if needed>
+- **GIVEN** <optional precondition — include only when one genuinely precedes the action>
+- **WHEN** <an externally observable event/input/condition the caller/peer/system can observe, named by its contract surface (message ID, error code) — NOT the internal variable encoding it>
+- **THEN** <an externally observable consequence (a CID is allocated, an error surfaces) — NOT an internal field state>
+- **AND** <additional observable outcome if needed>
+- **TRACE**: <module/subsystem OR source file OR function/symbol — coarsest sufficient; NEVER a line number or file:line range>
 
 #### Scenario: <Another Scenario>
 - **WHEN** <action or condition>
 - **THEN** <expected outcome>
+- **TRACE**: <module / file / function — never a line number>
 
 <!-- For the PRIMARY-OWNER repo only (and only when this capability has more than one participating repo): additional end-to-end/orchestration requirements here, describing how the capability spans repos. Each end-to-end requirement must ALSO contain SHALL/MUST + a scenario, and MAY reference a cross-repo participant inline in its description. -->
 </template>
@@ -89,5 +106,6 @@ Record EVERY (capability, repo) to generation-log.md using this structure (one e
 - Trivial no-transform evidence units (pure getter/setter passthrough, single constant assignment, pure formatting wrapper) need no dedicated requirement -- their behavior is that of the requirement they participate in.
 - Do not create one requirement per private helper, function, source file, build rule, or script merely because it exists. One behavior-level requirement may cover multiple evidence units when they implement the same behavior contract. Private/internal parsers and helpers do need requirements when they encode stable standard/protocol bit meanings, field mappings, validation rules, or error semantics.
 - If an existing requirement is implementation-level, preserve it on MERGE for regression safety, but write new content using the behavior-contract standard.
+- Every `#### Scenario:` MUST end with a `- **TRACE**:` field at stable granularity (module / source file / function-symbol, coarsest sufficient). Line numbers and `file:line` ranges MUST NOT appear anywhere in the spec. Private symbols (private members, internal collections, helpers) go in the TRACE at most, never in WHEN/THEN steps or the SHALL/MUST sentence; only contract-surface identifiers (message IDs, error codes, enum values, ABI signatures) appear in steps.
 - Execute only this instruction. Validate each spec SINGLY in place (`openspec validate <cap> --type spec`); the full whole-repo `openspec validate --specs` pass runs once, later, after the review<->refine loop -- not here.
 </rules>

@@ -87,26 +87,17 @@ blind, the `docs/` tree is navigated through per-folder indexes:
   change. Keep indexes authoritative — an index that disagrees with the directory is a
   bug.
 
-## OpenSpec Index Convention (`openspec/`)
+## Specs Index Convention (`openspec/specs/`)
 
-The `openspec/` tree mirrors the `docs/` convention above and is navigated the
-same way — per-folder indexes, loaded level by level:
-
-- **Every folder under `openspec/` (including `openspec/` itself) MUST contain an
-  `index.md`.** This applies recursively at every depth (`openspec/specs/`,
-  `openspec/changes/`, and any deeper folder).
-- Each `index.md` lists **every direct child** of that folder — both subfolders and
-  files — and gives each a **one-line name + short description**. Nothing at that level
-  is omitted; the index is the complete map of the folder.
-- Subfolders are linked by relative path (e.g. `[specs](specs/index.md)`), pointing to
-  the child's own `index.md` so the agent can descend one level at a time.
-- **Reading protocol for the agent:** start at `openspec/index.md`, read it, then only
-  descend into the specific child index that matches the task — never enumerate the whole
-  tree up front. Context is pulled in on demand, level by level.
-- **Authoring protocol:** whenever you add, remove, rename, or move a file or subfolder
-  anywhere under `openspec/`, update the `index.md` of **its parent folder** in the same
-  change. Keep indexes authoritative — an index that disagrees with the directory is a
-  bug.
+- **Reading protocol:** read the `openspec/specs/` index first, locate the one
+  capability that matches the task, then read **only that capability's
+  `spec.md`**. Do not load multiple specs in bulk, and do not read the whole
+  `specs/` directory. If no capability clearly matches, search `openspec/specs/`
+  for a keyword rather than opening specs at random.
+- **Authoring protocol:** whenever you add, remove, rename, or move a capability
+  directory under `openspec/specs/`, update its one line in the index in the same
+  change. Keep the index authoritative — an index that disagrees with the
+  directory is a bug.
 
 ## Spec-First Modification Rule
 
