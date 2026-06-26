@@ -1,16 +1,19 @@
 # Writing Effective Steer Instructions
 
-Every action node's first positional argument becomes the `instruction` that the
-agent reads and follows. The quality of the workflow's output depends directly
-on the quality of these instructions. This document provides a systematic
-method for writing accurate, unambiguous instructions.
+How to phrase a single instruction well. Each action node's first positional
+argument becomes the `instruction` the agent reads and follows. The strategic
+split — the instruction *positions* in one sentence while the template body
+*executes* — and the model-visibility boundary are covered in
+`best-practices.md`; this file is the tactical side: the concrete structure an
+instruction sentence expands into, and how to fill the inside of that boundary.
 
 ## Why Instruction Quality Matters
 
-Each instruction is handed to the agent as-is, rendered through a template.
-The agent has **no context beyond what the instruction provides** (plus any
-retry context on failure). Vague or ambiguous instructions produce vague or
-wrong results; precise instructions produce precise results.
+Each action node's first positional argument becomes the `instruction` that the
+agent reads and follows, rendered through a template. The agent has **no
+context beyond what the instruction provides** (plus any retry context on
+failure). Vague or ambiguous instructions produce vague or wrong results;
+precise instructions produce precise results.
 
 ## Instruction Diagnosis Checklist
 

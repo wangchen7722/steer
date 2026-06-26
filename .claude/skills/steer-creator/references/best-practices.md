@@ -1,5 +1,12 @@
 # Steer Workflow Best Practices
 
+How to design steer workflows well — concept + rule + a copyable steer example
+for each. This is the design methodology made concrete: the rules are stated,
+then shown in code you can adapt. For the tactical side of phrasing a single
+instruction (diagnosis checklist, per-node patterns), see `writing.md`; for
+DSL syntax see `syntax.md`; for template/check/context mechanisms see
+`mechanisms.md`.
+
 ## Workflow Design
 
 ### Start with `@context`
@@ -28,7 +35,7 @@ high-level summary of the workflow's purpose, shown on `instance start` and
 Each instruction is handed to the agent as-is. The agent has no context beyond
 what the instruction provides. Accuracy matters more than brevity.
 
-See `references/instruction-writing.md` for a systematic method: diagnosis
+See `references/writing.md` for a systematic method: diagnosis
 checklist, common issues and fixes, and patterns per node type.
 
 Key principles:
@@ -37,6 +44,51 @@ Key principles:
 - Specify the expected output format in `return=`.
 - Add `check=` with **concrete, repeatable** verification criteria.
 - Avoid vague phrases ("fix it", "make it good", "confirm it works").
+
+### The Instruction Positions; the Template Body Executes
+
+A step has two surfaces the model sees: the **instruction** (the workflow's
+positional argument) and the **template body** (the `.j2.md` the step
+expands). The instruction is one positioning sentence — what this step does,
+what to read first, the handoff. The template body carries the mechanism, the
+criteria, and the why. Keep their jobs separate: when both explain the
+mechanism, the model has to reconcile two statements of the same thing, and
+when they drift the model picks one and is wrong about the other.
+
+A `<rules>` block in a template earns its place only by adding *why-mandatory*
+(intent) or *do-not* (a failure mode the placeholder cannot express). The
+deletion test: *could the model infer this rule from the body or a placeholder
+alone?* If yes, it is duplication — cut it.
+
+```steer
+// Instruction positions in one sentence; "how" lives in the template body.
+task("Draft the proposal for {change}: read brainstorm.md first, then write proposal.md with Why / What Changes / Capabilities / Impact.",
+     produce=["openspec/changes/{change}/proposal.md"],
+     check="Confirm proposal.md has Why, What Changes, Capabilities, and Impact sections")
+```
+
+### Hold the Model-Visibility Boundary
+
+The model executing a step sees only the instruction and the template — not
+the workflow's control flow, the origin of interpolated variables, or the
+relationship between steps. A variable like `{covered}` interpolates to a
+literal `covered=true` / `covered=false` in the text the model reads; the model
+sees the value, not "this came from the judge step before the final refine."
+Describe what a value *means for what the model must write*, never its origin.
+Do not narrate step correspondence in template prose unless the model can
+observe both sides — if the correspondence matters, enforce it in `check=`.
+Reserve cross-step rationale (why a gate runs once, why a loop is post-test)
+for the workflow's own comments.
+
+```steer
+// GOOD: the instruction tells the model what covered=true means for its work.
+task("Spec coverage is {covered}. If covered is false, write the missing spec sections named in the gap list; if true, just confirm no regressions.",
+     check="Confirm every gap-listed capability has a spec file")
+
+// BAD: the instruction explains provenance the model cannot act on.
+task("The judge step before this one set covered. Now match the coverage_guard step's verdict and reconcile.",
+     check="...")
+```
 
 ### Use `check=` for Quality Gates
 
@@ -65,29 +117,35 @@ task("Create a proposal document for {change} that identifies goals, non-goals, 
 
 ## Control Flow Patterns
 
-### Bounded Retry with `loop ... until`
+### Run Convergence Work as Sense → Judge → Act, Post-Test
 
-Unbounded retry (`check=` alone) can loop forever. Wrap it in a `loop ... until`
-with a counter for bounded attempts:
+Iterative-convergence work (review, coverage, refinement) is best structured
+as a loop of three distinct roles, not one monolithic step: **Sense** reads
+the world and records state (PASS / GAP) without fixing anything; **Judge**
+is a pure boolean over the sensed state (is the GAP empty?); **Act** mutates
+the world to close the reported gap. Separating the roles lets the loop
+condition rest on the judge, lets sensing fan out by partition, and keeps the
+act step focused on a concrete delta. Make the loop post-test, and guard the
+act step inside the body so a round that is already covered does not refine.
 
 ```steer
-attempt = 0
-passed = false
+round = 0
 loop
-    attempt = attempt + 1
-    task("Apply a fix for {bug} based on root cause: {root_cause}. This is attempt {attempt}; record the change applied and why it should address the root cause. Preserve existing behavior for all other code paths.",
-         produce=["artifacts/bugfix-{bug}-attempt-{attempt}.md"],
-         check="Run `cargo test {bug}` and confirm zero failures")
-    passed = judge("Does `cargo test {bug}` exit with code 0?")
-until passed or attempt >= 3
-
-if not passed
-    task("Write a handoff document for {bug} containing: root cause, attempted fix, failing evidence, and the next diagnostic step",
-         produce=["artifacts/bugfix-{bug}-handoff.md"],
-         check="Confirm the handoff includes root cause, evidence, and next steps")
-    return
-end
+    gaps = collect("Read the specs in {dir} and list capabilities with no spec file. Report the gap list; if none, report empty.",
+                   return="gap list (capability names), empty if none",
+                   check="Confirm the list names only capabilities missing a spec")
+    covered = judge("Is the gap list empty? Answer true only if no capabilities are missing a spec.")
+    if not covered
+        task("Write the missing spec files for these capabilities: {gaps}. One file per capability.",
+             produce=["specs/{gaps}.md"],
+             check="Confirm one spec file exists per gap-listed capability")
+    end
+    round = round + 1
+until covered or round >= 5
 ```
+
+Note `covered` here reflects the judge *before* the final act — see the
+anti-pattern on stale loop variables below for how to report it honestly.
 
 ### Two-Phase: Investigate Then Act
 
@@ -105,18 +163,29 @@ task("Apply the smallest safe fix for {bug} based on root cause: {root_cause}. P
 
 This separates understanding from execution, producing better results.
 
-### Review Loop with `for`
+### Concurrency: Fan Out vs. Sequential `for`
 
-Iterate over a dynamic list for review:
+Reach for the right shape when work repeats over a list:
+
+- **Sequential `for`** when each item depends on the last, or when order
+  matters, or when the list is short enough that doing them one at a time is
+  fine.
+- **Fan out** (multiple agents running concurrently) when the items are
+  independent and there are enough of them that parallelism pays off.
 
 ```steer
-files = command("git diff --name-only -- . ':!target'", return="list of changed file paths")
+// Sequential: review each changed file in turn.
+files = command("git diff --name-only -- . ':!target'", return="changed file paths")
 
 for f in files
     task("Review {f} for accidental broad changes. Only changes directly related to {bug} are acceptable; simplify or revert anything else.",
          check="Confirm {f} contains only changes needed for {bug}")
 end
 ```
+
+When fanning out to concurrent agents that all write to the same shared file,
+have each agent return its result and let the main agent merge and append —
+don't let two agents append to the same file at once, or entries get lost.
 
 ### Conditional Logic with `if`
 
@@ -150,6 +219,32 @@ for f in files
 end
 ```
 
+### Summary Is the Record; Print Is the Headline + Pointer
+
+When a workflow produces both a summary artifact and a terminal print, make
+the summary the comprehensive record and the print a brief condensation that
+points to it. The summary is the handoff artifact (the whole task, every
+intermediate file with a one-line meaning, the final results); the print is a
+few facts (run name, outcome, where to look) plus a pointer. The print does
+not re-enumerate files and does not branch on the outcome — branch the
+*summary* instead, and let the print interpolate the outcome into one line.
+Boundary: if a detail belongs in the summary, it does not belong in the print.
+
+```steer
+// Summary branches on outcome; print just interpolates the headline.
+if fixed
+    task("Write the final report: root cause, the fix applied, the regression test added, and the verification run. One line per artifact produced.",
+         produce=["artifacts/bugfix-{bug}.md"],
+         check="Confirm the report names the root cause, fix, test, and verification")
+    print("bugfix-{bug}: fixed. Full report in artifacts/bugfix-{bug}.md.")
+else
+    task("Write a handoff: root cause, attempts made, failing evidence, next diagnostic step.",
+         produce=["artifacts/bugfix-{bug}-handoff.md"],
+         check="Confirm the handoff has root cause, attempts, evidence, next step")
+    print("bugfix-{bug}: not fixed in {attempt} attempts. Handoff in artifacts/bugfix-{bug}-handoff.md.")
+end
+```
+
 ## Template Best Practices
 
 ### Prefer Default Templates, Customize When Needed
@@ -169,7 +264,9 @@ on_check: |
 ```
 
 This lets you change how verification is phrased per node type, without
-modifying the VM.
+changing steer's behavior. The `check=` argument is the single source of check
+criteria; `on_check` only frames it — do not duplicate the check text into
+`on_check`.
 
 ### Use `@template` for Multi-Phase Workflows
 
@@ -282,7 +379,18 @@ single upfront gate block is cleaner than scattering gates across phases.
 
 `judge` records a one-time answer. It does **not** retry on failure. Use
 `check=` on `task`/`collect` when you need the agent to re-do work until it's
-correct.
+correct. `judge` is for *is this precondition met?* (gate); `check=` is for
+*did the work succeed?* (verify-and-retry).
+
+### Don't Treat a Stale Loop Variable as Final Truth
+
+At the end of a sense→judge→act loop, the loop-control variable reflects the
+judge **before** the final act — the act ran but was not re-sensed, so a
+`covered = false` may be stale: the final act may have closed the gap. Do not
+assert a residual gap as fact ("N units still uncovered") when it was measured
+before the last fix; do not paper it over as resolved either. Report the
+provenance ("last review found these gaps; refine ran after it and was not
+re-confirmed") and hand the residual list to the user as a checklist.
 
 ### Don't Nest Calls in Conditions
 
@@ -334,7 +442,7 @@ result = collect("Reproduce {bug} by running `cargo test {bug}`, inspect the fai
 ### Don't Set `checked` Without a Reason on Failure
 
 When a check fails, the `reason` field is required and must be non-empty.
-Bare `checked false` is rejected by the VM.
+Bare `checked false` is rejected by steer.
 
 ```bash
 # BAD:
@@ -367,22 +475,3 @@ steer workflow validate my-workflow
 
 Catch errors early. A typo in a `check=` string or a missing `return=` on
 `ask` will fail at runtime otherwise.
-
-### Instance Storage
-
-Instances live under `.steer/instances/<name>/`:
-
-```
-.steer/instances/<name>/
-├── context.json    # full execution state (resumable)
-└── audit.jsonl     # audit trail
-```
-
-Starting an instance with an existing name clears and recreates it. There is no
-history mechanism (v1).
-
-### Resume After Interruption
-
-Because the full context is serialized to JSON, instances can be resumed across
-CLI invocations. If the agent crashes or the session ends, start a new session
-and call `steer instance step <name>` to continue where you left off.

@@ -50,8 +50,7 @@ instance myrun: started
 bug-fix workflow for login issues
 ```
 
-The instance directory is `.steer/instances/<name>/`. Starting with an existing
-name clears and recreates it.
+Starting with an existing name clears and recreates the instance.
 
 ### `steer instance step <name>`
 
@@ -79,7 +78,7 @@ steer instance check myrun
 Possible results:
 | Output | Meaning |
 |--------|---------|
-| `advanced` | Op passed; PC moved forward |
+| `advanced` | Op passed; steer advanced to the next step |
 | `pending` | Value not reported yet; `set` it first |
 | (instruction) | Check instruction for the agent to verify |
 | `failed` | Check failed; retry the same instruction |

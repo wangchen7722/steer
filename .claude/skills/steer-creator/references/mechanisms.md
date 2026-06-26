@@ -69,7 +69,7 @@ Available variables in `on_check`:
 - `{{ steer_instance }}`, `{{ steer_target }}`: runtime context
 
 The `<report>` section with `steer instance set ... checked` commands is
-**always auto-appended by the VM** and must NOT be included in the `on_check`
+**always auto-appended by steer** and must NOT be included in the `on_check`
 template.
 
 #### Without Front-matter
@@ -143,41 +143,50 @@ content; the `<phase>.j2.md` carries everything fixed.
 ### Template Mechanism Gotchas
 
 Two behaviors catch authors of custom templates. Knowing them up front
-saves real debugging time.
+saves real debugging time. Both are observable from the `steer` CLI alone —
+no source inspection needed.
 
-**`return` is only injected into the template context when the call is
-assigned to a variable.** In `build_context`, a `return=` argument is
-skipped for bare calls (calls with no receiver): the condition is
-`name == "return" && into.is_none()`. The reasoning is that `return`
-describes how to report a value, and a value-reporting prompt only makes
-sense when there is a variable to receive it.
+**`return=` is ignored on a bare call (a call with no receiving variable).**
+A `return=` argument describes how the agent should report a value back, and a
+value-reporting prompt only makes sense when a variable exists to receive it.
+So when you write a bare `mynode("...", return="...")` — a call that is not
+assigned to anything — steer drops the `return=` argument entirely:
+
+- `{{ return }}` in the template renders empty.
+- No `<report>` block is produced.
 
 What this means in practice:
 
-- A bare `mynode("...", return="...")` silently drops `return`: `{{ return }}`
-  renders empty, and the VM emits no `<report>` block.
 - To have an agent report a value back, assign the call:
   `report = mynode("...", return="...")`.
 - For a pure `check=` quality gate where there is no value to report, use a
-  bare call **without** `return=`. The check flow advances via `set
-  checked`, which needs no `<report>` block.
+  bare call **without** `return=`. The check flow advances via `set checked`,
+  which needs no `<report>` block.
 
-**`validate` does not see `@template`.** `steer workflow validate`
-resolves templates through `resolve_template()` (no meta), which looks only
-in `default/` — never in the `@template` directory. So a custom callee that
-declares `return: string` in `openspec-superpowers/returning.j2.md` looks,
-to `validate`, like an unknown callee with no `return` spec. Assigning its
-result then fails with `produces no value and cannot be assigned`, even
-though at runtime the template is found and `return` works fine.
+You can confirm which form you have with `steer workflow simulate`: the
+rendered output either contains a `<report>` block (assigned, `return=` active)
+or does not (bare, `return=` dropped).
 
-Two ways around this:
+**`validate` does not resolve `@template`; `simulate` does.** This is a
+deliberate split in how the two commands look for templates:
+
+- `steer workflow validate` looks only in `.steer/templates/default/`. It
+  never consults the active `@template` directory. So a custom callee that
+  declares `return: string` in `openspec-superpowers/returning.j2.md` looks,
+  to `validate`, like an unknown callee with no `return` spec. Assigning its
+  result then fails with `produces no value and cannot be assigned`, even
+  though at runtime the template is found and `return=` works fine.
+- `steer workflow simulate` **does** resolve `@template`. It renders the same
+  template the runtime would use, so it confirms the template is found and
+  renders correctly.
+
+Two ways around the `validate` blind spot:
 
 - Model the step as a bare call with a `check=` gate (no assignment, no
-  `return`). `validate` is satisfied, and the check flow handles
+  `return=`). `validate` is satisfied, and the check flow handles
   advancement.
-- Or accept the false positive and rely on `simulate`, which **does**
-  resolve `@template`, to confirm the template is found and renders
-  correctly. For custom callees, `simulate` is the authoritative check;
+- Or accept the false positive and rely on `simulate` to confirm the custom
+  callee renders. For custom callees, `simulate` is the authoritative check;
   `validate`'s blind spot is a known limitation.
 
 ---
@@ -186,7 +195,7 @@ Two ways around this:
 
 ### Three Check Kinds
 
-When the agent calls `steer instance check`, the VM dispatches based on the
+When the agent calls `steer instance check`, steer dispatches based on the
 nature of the current op:
 
 | Kind | When | Behavior |
@@ -215,16 +224,16 @@ nature of the current op:
    ```
 
 6. Agent calls `steer instance check` again:
-   - If passed → `advanced` (PC moves forward).
-   - If failed → `failed` (PC stays, retry mechanism kicks in).
+   - If passed → `advanced` (steer advances to the next step).
+   - If failed → `failed` (steer stays on the same step, retry mechanism kicks in).
 
 ### Retry Mechanism
 
 When a check fails:
 
-1. `failure_reason` is stored in `StepState`.
-2. `retry_count` is incremented.
-3. PC stays on the same instruction.
+1. The failure reason is recorded against the current step.
+2. The retry count is incremented.
+3. steer stays on the same step.
 4. Next `step` appends retry context:
 
    ```
@@ -251,19 +260,6 @@ Use `judge` for decisions; use `check` for quality gates.
 ---
 
 ## Context Mechanism
-
-### Execution Context (`context.json`)
-
-The full execution state is serialized to `.steer/instances/<name>/context.json`:
-
-| Field | Description |
-|-------|-------------|
-| `pc` | Program counter (index into IR) |
-| `status` | `Running`, `Complete`, or `Halted(String)` |
-| `vars` | Current scope's variables |
-| `frames` | Call stack (for `func`/`return`) |
-| `steps` | Per-agent-op state, keyed by PC |
-| `meta` | Runtime metadata from `@` directives |
 
 ### `@context` Directive
 
@@ -302,35 +298,24 @@ task("implement the proposal", ...)     # uses default/task.j2.md
 
 ## Control Flow Details
 
-### IR (Intermediate Representation)
+### How Execution Proceeds
 
-The AST is lowered to a flat instruction stream. The PC is simply an index into
-this vector:
-
-| Instruction | Purpose |
-|-------------|---------|
-| `SetMeta` | Update `@template` / `@context` at runtime |
-| `AgentOp` | An action node; pauses for agent |
-| `Assign` | Evaluate expression, bind to variable |
-| `JumpIfFalse` | Conditional jump (used by `if`, `loop ... until`) |
-| `Jump` | Unconditional jump |
-| `ForInit` | Initialize for-loop hidden iterator slot |
-| `ForIter` | Pop next element or jump to `end` |
-| `Call` | Call user function |
-| `Return` | Return from function or halt at top level |
-| `Halt` | End of program |
-
-Functions are emitted after `Halt`, reachable only via `Call`.
+steer compiles a workflow into a linear sequence of steps and advances through
+it one step at a time, handing each action node to the external agent and
+waiting before moving on. `steer instance step` reads the current step; `steer
+instance check` advances to the next. Control-flow constructs (`if`,
+`loop ... until`, `for`, `func`) are how you shape that sequence — their syntax
+is covered in `syntax.md`.
 
 ### Scope and Variables
 
-- Variables live in `ctx.vars` (a `HashMap<String, Value>`).
 - Assignment (`x = expr`) writes to the current scope.
-- `for` loops use a hidden iterator slot (`__for_N`) internally; the original
-  list variable is not consumed.
-- `func` saves and restores the caller's variables on the call stack (`Frame`).
+- `for` loops iterate over the list without consuming it — the original list
+  variable keeps its value after the loop.
+- `func` saves the caller's variables on entry and restores them on return, so
+  a function body has its own scope and cannot clobber the caller's variables.
 
-### Halt and Error
+### Halting and Erroring
 
 - A top-level `return` halts the workflow with status `Complete`.
 - `steer instance error <name> "<reason>"` halts with status `Halted(reason)`.

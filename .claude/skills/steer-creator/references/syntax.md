@@ -25,7 +25,7 @@ files = ["src/main.rs", "Cargo.toml"]
 
 - `@template` changes where subsequent action nodes resolve their `.j2.md` templates.
 - `@context` sets a description shown on `instance start` and `instance status`.
-- Both persist across resume. Set `@template = "default"` to revert.
+- Both apply to all subsequent nodes until set again. Set `@template = "default"` to revert.
 
 ### Standalone Call (Side-effect Node)
 
