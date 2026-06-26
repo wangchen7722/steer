@@ -1,0 +1,162 @@
+// Workflow: openspec-archive
+// Drives the final phase of the OpenSpec + Superpowers spec-driven workflow:
+// select a completed change -> check completion -> verify -> sync delta specs
+// (optional, user-driven) -> archive -> summary.
+// Reuses .steer/templates/openspec-superpowers/ and adds one phase callee,
+// `archive`, backed by archive.j2.md in that directory.
+//
+// The workflow is a control unit: it decides order and gates; the agent does
+// all real work by invoking openspec skills (openspec-verify-change,
+// openspec-sync-specs, and the manual archive flow) via the Skill tool.
+
+@template = "openspec-superpowers"
+@context = "OpenSpec + Superpowers archive phase: verify a completed change, optionally sync its delta specs to main specs, then archive it. Requires the apply workflow (or equivalent implementation) to have run first."
+@description = "Spec-driven archive phase: verify, sync, and archive a completed change."
+
+// ---------------------------------------------------------------------------
+// Phase 0: select the change to archive.
+//
+// `openspec list --json` is the source of active changes. We never guess or
+// auto-select: zero changes -> halt; one change -> confirm it with the user
+// (still their call, since archiving is irreversible-ish); many -> let them
+// pick. The CLI emits one JSON object per line under "changes", so we ask the
+// agent to parse the names out of the raw output rather than relying on any
+// shell-side filtering.
+// ---------------------------------------------------------------------------
+
+listing = command("openspec list --json",
+                 return="the raw JSON output of `openspec list --json`, unchanged")
+
+// Zero active changes: nothing to archive. Halt rather than loop on nothing.
+has_changes = judge("Looking at the openspec list JSON you just captured in `listing`, is the `changes` array non-empty (i.e. at least one active, non-archived change exists)? Answer true only if there is one or more entries; false if the array is empty or missing.")
+if not has_changes
+    print("STOP: no active openspec changes found. Run `openspec list` to confirm; create or finish a change before archiving.")
+    return
+end
+
+// Let the user choose. `ask` guarantees the value comes from the human, not
+// the agent. The instruction hands the agent the parsed list so it can offer
+// the names as AskUserQuestion options.
+change = ask("Using the active changes parsed from the `listing` JSON, ask the user which single change to archive. Offer each change name as a multiple-choice option (the user also has a free-text 'Other' choice). The chosen value must be an existing openspec/changes/<change>/ directory name.",
+             return="the selected change name in kebab-case, exactly matching an openspec/changes/<change>/ directory")
+
+// ---------------------------------------------------------------------------
+// Phase 1: completion check.
+//
+// `openspec status --change <name> --json` reports artifact status (`artifacts`
+// array with `done`/other) AND task completion (`completedTasks`/`totalTasks`,
+// also surfaced in `openspec list`). We capture it once and let the agent read
+// both surfaces, rather than hand-counting `- [ ]` checkboxes ourselves.
+//
+// Incomplete artifacts or tasks do NOT hard-block: per the archive skill's
+// guardrail ("don't block, just inform and confirm"), we warn and ask whether
+// to force-continue. The hard gate is verify, not this check.
+// ---------------------------------------------------------------------------
+
+status_json = command("openspec status --change \"{change}\" --json",
+                      return="the raw JSON output of `openspec status --change <change> --json`, unchanged")
+
+incomplete = judge("Looking at the status JSON in `status_json`, is anything incomplete? Answer true if ANY artifact in the `artifacts` array has a `status` other than `done`, OR if `completedTasks` is less than `totalTasks`. Answer false only if every artifact is `done` and completedTasks equals totalTasks.")
+if incomplete
+    print("WARNING: change {change} is not fully complete (some artifacts are not `done` or some tasks are unchecked). Review the `status_json` details before deciding.")
+    force = ask("Change {change} has incomplete artifacts or tasks (see the warning above). Archive is meant for completed changes. Do you want to force-continue anyway? Offer options: 'Cancel (recommended)' to halt and finish the work first, or 'Force continue' to proceed to verify/archive despite the incompleteness.",
+                return="the user's decision: the literal string `force` to continue, or `cancel` to halt")
+    if force != "force"
+        print("Cancelled. Finish the incomplete artifacts/tasks for {change} before archiving.")
+        return
+    end
+end
+
+// ---------------------------------------------------------------------------
+// Phase 2: verify (hard gate).
+//
+// Per the verify skill, archive only proceeds when every check is PASS with
+// zero `- [ ]` gaps. This is a hard gate, not a warning: if verify fails, halt
+// and hand the gap list back to the user. verify.j2.md drives the
+// openspec-verify-change skill and produces verify.md.
+// ---------------------------------------------------------------------------
+
+has_verify_skill = judge("Is `openspec-verify-change` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+if not has_verify_skill
+    print("STOP: `openspec-verify-change` is required for the verify gate but is not in your available skills list. Install it and re-run this workflow.")
+    return
+end
+
+verify("Run openspec-verify-change against openspec/changes/{change}/. Produce verify.md covering all 7 checks. Confirm all tasks.md checkboxes are `- [x]` and all code changes are committed.",
+       produce=["openspec/changes/{change}/verify.md"],
+       check="Confirm openspec/changes/{change}/verify.md exists, all 7 checks are documented, the Overall Decision is PASS, and no `- [ ]` gap remains. If verify.md shows FAIL or any `- [ ]` gap, report the failure via `set checked` with a reason naming the gaps so the agent re-runs verify after fixing them.")
+
+// The check= gate above is the hard gate: steer keeps the agent on the verify
+// step (re-running openspec-verify-change and fixing gaps) until verify.md is
+// PASS with zero `- [ ]`. Once it advances, PASS is guaranteed — no separate
+// judge needed. Using judge here would be an anti-pattern: judge records a
+// one-time answer and does not retry, exactly the wrong tool for verification.
+
+// ---------------------------------------------------------------------------
+// Phase 3: delta-spec sync decision.
+//
+// If the change carries delta specs (openspec/changes/<change>/specs/), the
+// archive skill wants their effect synced into openspec/specs/ BEFORE the
+// change directory is moved into archive/ (after the move the delta specs are
+// harder to reach and main specs would drift). So we assess sync state, show
+// the user what would be applied, and let them choose: sync now (recommended)
+// or archive without syncing. Sync is delegated to openspec-sync-specs.
+//
+// If there are no delta specs, skip the prompt entirely.
+// ---------------------------------------------------------------------------
+
+has_delta = judge("Does the directory openspec/changes/{change}/specs/ exist and contain at least one .md delta spec file? Answer true only if it exists and is non-empty; false otherwise.")
+if has_delta
+    // Assess what the delta specs would do to main specs, so the user decides
+    // with full information. collect grounds this in the actual files.
+    sync_assessment = collect("Read every delta spec under openspec/changes/{change}/specs/ and the corresponding main spec at openspec/specs/<capability>/spec.md for each capability the delta touches. Summarize, per capability, what syncing would do: which requirements would be ADDED, MODIFIED, REMOVED, or RENAMED, and whether the main spec already reflects them (i.e. sync is a no-op). Be concrete and cite requirement names.",
+                              return="per-capability sync summary: for each capability, the delta operations (ADDED/MODIFIED/REMOVED/RENAMED with requirement names) and whether main spec already matches",
+                              check="Confirm the summary names every capability the delta specs touch and lists the requirement-level operations for each")
+
+    print("Delta specs found for {change}. Sync assessment (from the collect step): {sync_assessment}")
+
+    sync_choice = ask("Sync the delta specs above into openspec/specs/ before archiving {change}? Offer options: 'Sync now (recommended)' to invoke openspec-sync-specs and apply the deltas to main specs, or 'Archive without syncing' to skip sync and archive as-is.",
+                      return="the user's choice: the literal string `sync` to sync now, or `skip` to archive without syncing")
+
+    if sync_choice == "sync"
+        has_sync_skill = judge("Is `openspec-sync-specs` present in your available skills list? Answer true only if you can see it listed; false otherwise.")
+        if not has_sync_skill
+            print("STOP: `openspec-sync-specs` is required to sync but is not in your available skills list. Install it, or re-run and choose 'Archive without syncing'.")
+            return
+        end
+        task("Invoke the `openspec-sync-specs` skill via the Skill tool to sync the delta specs for change {change} into openspec/specs/. Use the sync assessment as the delta analysis input. Apply ADDED/MODIFIED/REMOVED/RENAMED operations per capability. After syncing, confirm each touched main spec reflects the delta.",
+             check="Confirm every delta spec under openspec/changes/{change}/specs/ has been applied to its openspec/specs/<capability>/spec.md, and no delta requirement is left unapplied")
+        synced = true
+    else
+        synced = false
+    end
+else
+    synced = false
+end
+
+// ---------------------------------------------------------------------------
+// Phase 4: archive.
+//
+// Delegated to the archive phase callee (archive.j2.md), which positions the
+// agent to run the manual archive flow the archive skill prescribes:
+// mkdir -p openspec/changes/archive, then mv the change directory to
+// archive/<name> (naming follows the archive skill's own convention; the
+// .openspec.yaml moves with the directory). This runs AFTER any sync, so the
+// delta specs have already been folded into main specs before the move.
+// ---------------------------------------------------------------------------
+
+archive("Archive the completed change {change}. Move openspec/changes/{change}/ into openspec/changes/archive/ following the archive skill's manual flow (mkdir -p the archive dir, mv the change dir, preserve .openspec.yaml). Confirm the change no longer appears under openspec/changes/ and now appears under openspec/changes/archive/.",
+        check="Confirm openspec/changes/{change}/ no longer exists and its contents (including .openspec.yaml) now live under openspec/changes/archive/")
+
+// ---------------------------------------------------------------------------
+// Phase 5: summary.
+//
+// One headline line pointing at where the change went and whether specs were
+// synced. Detail lives in the moved artifacts; the print does not re-enumerate.
+// ---------------------------------------------------------------------------
+
+if synced
+    print("Archive complete for {change}: verified, delta specs synced to openspec/specs/, change moved to openspec/changes/archive/. Review verify.md inside the archived directory.")
+else
+    print("Archive complete for {change}: verified, change moved to openspec/changes/archive/ (delta specs were not synced). Review verify.md inside the archived directory.")
+end
